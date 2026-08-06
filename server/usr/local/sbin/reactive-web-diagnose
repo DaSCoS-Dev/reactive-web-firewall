@@ -1,49 +1,18 @@
 #!/usr/bin/env bash
 set -u
 set -o pipefail
-
-failures=0
-warns=0
-ok()   { printf '[ OK ] %s\n' "$*"; }
-warn() { printf '[WARN] %s\n' "$*"; warns=$((warns+1)); }
-fail() { printf '[FAIL] %s\n' "$*"; failures=$((failures+1)); }
-
-check_cmd() {
-    command -v "$1" >/dev/null 2>&1 && ok "command $1" || fail "missing command $1"
-}
-
-for c in apache2ctl perl nft ss ssh tail logger tcpdump journalctl systemctl; do
-    check_cmd "$c"
-done
-
-perl -c /usr/local/sbin/reactive-web-ban.pl >/dev/null 2>&1 && ok 'watcher syntax' || fail 'watcher syntax'
-perl -c /usr/local/lib/reactive-web-firewall/detector.pm >/dev/null 2>&1 && ok 'detector syntax' || fail 'detector syntax'
-
-apache2ctl configtest >/dev/null 2>&1 && ok 'Apache configuration' || fail 'Apache configuration'
-
-for svc in reactive-web-fastban.service reactive-web-ban.service; do
-    systemctl is-active --quiet "$svc" && ok "$svc active" || fail "$svc inactive"
-done
-
-if systemctl is-enabled --quiet reactive-web-packet-ring.service 2>/dev/null; then
-    systemctl is-active --quiet reactive-web-packet-ring.service && ok 'packet ring active' || warn 'packet ring enabled but inactive'
-else
-    warn 'packet ring disabled'
+failures=0; warns=0
+ok(){ printf '[ OK ] %s\n' "$*"; }; warn(){ printf '[WARN] %s\n' "$*"; warns=$((warns+1)); }; fail(){ printf '[FAIL] %s\n' "$*"; failures=$((failures+1)); }
+for c in apache2ctl perl nft ss ssh tail logger tcpdump journalctl systemctl; do command -v "$c" >/dev/null 2>&1 && ok "command $c" || fail "missing command $c"; done
+/usr/local/sbin/reactive-web-validate >/dev/null 2>&1 && ok 'configuration and modular rules' || fail 'configuration or modular rules'
+for svc in reactive-web-fastban.service reactive-web-ban.service; do systemctl is-active --quiet "$svc" && ok "$svc active" || fail "$svc inactive"; done
+CONFIG_LIB="${RWF_CONFIG_LIB:-/usr/local/lib/reactive-web-firewall/config.sh}"
+if [[ ! -r "$CONFIG_LIB" ]]; then
+    candidate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib/reactive-web-firewall" 2>/dev/null && pwd)/config.sh"
+    [[ -r "$candidate" ]] && CONFIG_LIB="$candidate"
 fi
-
-nft list table inet reactive_web_fastban >/dev/null 2>&1 && ok 'local fast-ban table loaded' || fail 'local fast-ban table missing'
-
-[[ -s /var/log/apache2/reactive_web_access.log ]] && ok 'Apache reactive log has data' || warn 'Apache reactive log is empty'
-[[ -f /etc/reactive-web-firewall/keys/firewall_ed25519 ]] && ok 'SSH private key' || fail 'SSH private key missing'
-[[ -f /etc/reactive-web-firewall/keys/known_hosts ]] && ok 'SSH known_hosts' || fail 'SSH known_hosts missing'
-
-if grep -q '^CONFIG_INET_DIAG_DESTROY=y' "/boot/config-$(uname -r)" 2>/dev/null; then
-    ok 'CONFIG_INET_DIAG_DESTROY=y'
-else
-    warn 'kernel config does not confirm CONFIG_INET_DIAG_DESTROY; perform the documented ss -K test'
-fi
-
-/usr/local/sbin/reactive-web-ban.pl --show-config >/dev/null 2>&1 && ok 'rules configuration' || fail 'rules configuration'
-
-printf '\nFailures: %d, warnings: %d\n' "$failures" "$warns"
-(( failures == 0 ))
+source "$CONFIG_LIB"
+if rwf_bool "$(rwf_cfg packet_ring_enabled on)"; then systemctl is-active --quiet reactive-web-packet-ring.service && ok 'packet ring active' || warn 'packet ring configured but inactive'; else warn 'packet ring disabled by configuration'; fi
+[[ -f "$(rwf_cfg ssh_key /etc/reactive-web-firewall/keys/firewall_ed25519)" ]] && ok 'SSH private key' || fail 'SSH private key missing'
+[[ -f "$(rwf_cfg known_hosts /etc/reactive-web-firewall/keys/known_hosts)" ]] && ok 'SSH known_hosts' || fail 'SSH known_hosts missing'
+printf '\nFailures: %d, warnings: %d\n' "$failures" "$warns"; ((failures==0))

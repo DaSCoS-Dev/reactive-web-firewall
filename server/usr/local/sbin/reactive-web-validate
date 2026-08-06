@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -euo pipefail
+CONFIG_LIB="${RWF_CONFIG_LIB:-/usr/local/lib/reactive-web-firewall/config.sh}"
+if [[ ! -r "$CONFIG_LIB" ]]; then
+    candidate="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../lib/reactive-web-firewall" 2>/dev/null && pwd)/config.sh"
+    [[ -r "$candidate" ]] && CONFIG_LIB="$candidate"
+fi
+source "$CONFIG_LIB"
+
+config="${RWF_CONFIG:-/etc/reactive-web-firewall/reactive-web-firewall.conf}"
+rules="$(rwf_cfg rules_directory /etc/reactive-web-firewall/rules.d)"
+
+perl -c /usr/local/lib/reactive-web-firewall/core.pm
+perl -c /usr/local/sbin/reactive-web-ban.pl
+shopt -s nullglob
+files=("$rules"/*.pm)
+((${#files[@]} > 0)) || { echo "No .pm rules in $rules" >&2; exit 1; }
+for file in "${files[@]}"; do perl -c "$file"; done
+/usr/local/sbin/reactive-web-ban.pl --config "$config" --validate-config
+/usr/local/sbin/reactive-web-fastban render | /usr/sbin/nft -c -f -
+/usr/local/sbin/reactive-web-packet-ring --validate
+
+rotate_frequency="$(rwf_cfg apache_log_rotate_frequency daily)"
+rotate_count="$(rwf_cfg apache_log_rotate_count 14)"
+report_dir="$(rwf_cfg report_output_directory /root)"
+[[ "$rotate_frequency" =~ ^(daily|weekly|monthly)$ ]] || { echo 'Invalid apache_log_rotate_frequency' >&2; exit 1; }
+[[ "$rotate_count" =~ ^[1-9][0-9]*$ ]] && ((rotate_count <= 365)) || { echo 'Invalid apache_log_rotate_count' >&2; exit 1; }
+[[ "$report_dir" == /* ]] || { echo 'report_output_directory must be absolute' >&2; exit 1; }
+/usr/sbin/apache2ctl configtest
+printf '\nConfiguration and rule modules are valid.\n'

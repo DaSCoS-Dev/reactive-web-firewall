@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0
+
+- Centralized all server-side settings in one documented configuration file.
+- Split detection families into independently documented Perl modules under `rules.d`.
+- Added safe hot reload: invalid edits keep the last valid runtime configuration.
+- Added `reactive-web-validate`, `reactive-web-apply`, and a configurable packet-ring launcher.
+- Made Apache log path, local fast-ban ports/table/priority, SSH channel, socket kill and packet ring configurable.
+- Removed the monolithic detector and the separate connection/rules configuration files.
+
 ## 0.2.1
 
 - changed the project license from MIT to GNU AGPL v3 or later;

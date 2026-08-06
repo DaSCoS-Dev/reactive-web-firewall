@@ -1,6 +1,0 @@
-# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
-# SPDX-License-Identifier: AGPL-3.0-or-later
-
-# Reserved for optional external integrations.
-# The standalone immediate watcher intentionally does not trust a User-Agent
-# string for critical signatures such as .git, .env or SQL injection.

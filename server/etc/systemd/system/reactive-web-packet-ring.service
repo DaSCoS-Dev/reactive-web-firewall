@@ -8,15 +8,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/tcpdump -i any -nn -U -s 96 -B 4096 -C 5 -W 20 -Z tcpdump -w /var/log/reactive-web-firewall/pcap/web.pcap "tcp and (port 80 or port 443)"
+ExecStart=/usr/local/sbin/reactive-web-packet-ring
 Restart=always
 RestartSec=2
 Nice=10
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
-ProtectSystem=strict
-ReadWritePaths=/var/log/reactive-web-firewall/pcap
+ProtectSystem=false
 
 [Install]
 WantedBy=multi-user.target

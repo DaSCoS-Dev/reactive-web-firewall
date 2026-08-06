@@ -1,4 +1,4 @@
-# Reactive Web Firewall 0.2.1
+# Reactive Web Firewall 0.3.0
 
 Reactive Web Firewall links an Apache reverse proxy to an OpenWrt firewall and reacts to high-confidence malicious web signatures within milliseconds.
 
@@ -32,7 +32,7 @@ The watcher acts only on deliberately strong signatures:
 - generic PHP probes under restrictive conditions;
 - `wp-login.php` probes under restrictive conditions.
 
-Durations are configured in `/etc/reactive-web-firewall/rules.conf` and are reloaded automatically.
+All server settings and rule policies live in `/etc/reactive-web-firewall/reactive-web-firewall.conf`; documented signatures are separate modules in `/etc/reactive-web-firewall/rules.d/`.
 
 ## Technical requirements
 
@@ -66,8 +66,8 @@ The production alignment was validated against OpenWrt 25.12.2, kernel 6.12, `ap
 ## Automatic installation
 
 ```bash
-unzip reactive-web-firewall-0.2.1.zip
-cd reactive-web-firewall-0.2.1
+unzip reactive-web-firewall-0.3.0.zip
+cd reactive-web-firewall-0.3.0
 sudo ./install.sh --check-only
 sudo ./install.sh --firewall-host 192.0.2.1 --install-firewall
 ```
@@ -130,6 +130,9 @@ It uses `GlobalLog`, so application VirtualHosts do not need to be copied or cha
 sudo reactive-web-diagnose
 sudo journalctl -t reactive-web-ban -o short-precise
 sudo reactive-web-ban.pl --show-config
+sudo reactive-web-ban.pl --list-rules
+sudo reactive-web-validate
+sudo reactive-web-apply
 sudo reactive-web-ban.pl --list-state
 sudo reactive-web-ban.pl --unban 203.0.113.77
 ```
@@ -188,3 +191,7 @@ modifies the software and makes it available to users over a network must also
 comply with the obligations in section 13 of the AGPL.
 
 See [LICENSE](LICENSE), [NOTICE](NOTICE) and [AUTHORS.md](AUTHORS.md).
+
+## Central configuration and modular rules
+
+Version 0.3.0 keeps all server settings in `reactive-web-firewall.conf` and separates signatures into documented `rules.d/*.pm` modules. Run `reactive-web-validate` before applying changes with `reactive-web-apply`.

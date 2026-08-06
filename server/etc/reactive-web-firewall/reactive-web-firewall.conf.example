@@ -1,0 +1,121 @@
+# Reactive Web Firewall - configurazione centrale lato server
+# Reactive Web Firewall - central server-side configuration
+#
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# SINTASSI / SYNTAX
+#   chiave = valore
+#   key = value
+#
+# Le righe vuote e quelle che iniziano con # sono ignorate. Non usare commenti a fine riga.
+# Empty lines and lines beginning with # are ignored. Do not use trailing comments.
+#
+# VALIDAZIONE / VALIDATION
+#   sudo reactive-web-validate
+#
+# APPLICAZIONE DOPO LE MODIFICHE / APPLY AFTER CHANGES
+#   sudo reactive-web-apply
+#
+# Le policy e i moduli in rules.d vengono ricaricati automaticamente quando
+# cambiano. Per percorsi, SSH, porte, packet ring o log usare reactive-web-apply.
+# Policies and rules.d modules are hot-reloaded. For paths, SSH, ports, packet
+# ring or logging settings run reactive-web-apply.
+
+###############################################################################
+# LOG APACHE E MOTORE / APACHE LOG AND ENGINE
+###############################################################################
+
+apache_log_file = /var/log/apache2/reactive_web_access.log
+apache_log_rotate_frequency = daily
+apache_log_rotate_count = 14
+rules_directory = /etc/reactive-web-firewall/rules.d
+allowlist_file = /etc/reactive-web-firewall/allowlist
+state_file = /var/lib/reactive-web-firewall/active.tsv
+active_directory = /run/reactive-web-firewall/active
+tail_sleep = 0.1
+logger_tag = reactive-web-ban
+
+###############################################################################
+# FIREWALL OPENWRT E SSH / OPENWRT FIREWALL AND SSH
+###############################################################################
+
+# Questi valori vengono compilati dall'installer.
+# These values are filled by the installer.
+firewall_host = @@FIREWALL_HOST@@
+firewall_port = @@FIREWALL_PORT@@
+firewall_user = @@FIREWALL_USER@@
+ssh_key = /etc/reactive-web-firewall/keys/firewall_ed25519
+known_hosts = /etc/reactive-web-firewall/keys/known_hosts
+ssh_connect_timeout = 2
+ssh_control_persist = 600
+ssh_control_path = /run/reactive-web-firewall/ssh-%C
+remote_host_label = proxy
+
+###############################################################################
+# BLOCCO LOCALE IMMEDIATO / IMMEDIATE LOCAL FAST-BAN
+###############################################################################
+
+# on/off: chiude localmente le porte web prima della conferma OpenWrt.
+# on/off: locally closes web ports before OpenWrt confirms the definitive ban.
+local_fastban_enabled = on
+
+# Rete di sicurezza: l'elemento locale scade comunque se il watcher muore.
+# Safety net: the local element expires even if the watcher dies.
+local_fastban_timeout = 5m
+
+# Porte protette dal set nftables locale.
+# Ports protected by the local nftables set.
+local_fastban_ports = 80,443
+local_fastban_table = reactive_web_fastban
+local_fastban_priority = -250
+
+###############################################################################
+# CHIUSURA SOCKET / SOCKET DESTRUCTION
+###############################################################################
+
+local_socket_kill = on
+local_socket_post_sweep = on
+local_socket_ports = 80,443
+
+# Evita di ripetere lo stesso ban durante la consegna di righe già accodate.
+# Avoids repeating the same ban while queued log lines are still delivered.
+duplicate_suppress = 90s
+
+###############################################################################
+# PACKET RING FORENSE / FORENSIC PACKET RING
+###############################################################################
+
+packet_ring_enabled = on
+packet_ring_interface = any
+packet_ring_snaplen = 96
+packet_ring_buffer_kb = 4096
+packet_ring_file_size_mb = 5
+packet_ring_file_count = 20
+packet_ring_directory = /var/log/reactive-web-firewall/pcap
+packet_ring_basename = web.pcap
+packet_ring_filter = tcp and (port 80 or port 443)
+report_output_directory = /root
+
+###############################################################################
+# POLICY DELLE REGOLE / RULE POLICIES
+###############################################################################
+#
+# Il nome dopo policy_ deve corrispondere al campo "name" del modulo Perl.
+# The name after policy_ must match the Perl module "name" field.
+#
+# Valori ammessi / accepted values:
+#   off, disabled, 0       regola disabilitata / disabled rule
+#   permanent, perm, 1     ban permanente / permanent ban
+#   30m, 4h, 3d, 2w       ban temporaneo / temporary ban
+#   3600                   secondi / seconds
+
+policy_sql_injection = 2w
+policy_wp_batch = 3d
+policy_git_exploit = permanent
+policy_env_exploit = permanent
+policy_framework_exploit = permanent
+policy_xmlrpc = 3d
+policy_known_webshell = permanent
+policy_wp_login = 4h
+policy_php_probe = 1h

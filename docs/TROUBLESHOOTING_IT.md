@@ -21,7 +21,8 @@ Controllare `mod_remoteip` se `%h` mostra sempre il proxy intermedio.
 ## Il canale OpenWrt fallisce
 
 ```bash
-source /etc/reactive-web-firewall/connection.conf
+sudo reactive-web-ban.pl --show-config
+# oppure leggere /etc/reactive-web-firewall/reactive-web-firewall.conf
 ssh -p "$FIREWALL_PORT" -i /etc/reactive-web-firewall/keys/firewall_ed25519   -o IdentitiesOnly=yes -o UserKnownHostsFile=/etc/reactive-web-firewall/keys/known_hosts   "$FIREWALL_TARGET" check
 ```
 

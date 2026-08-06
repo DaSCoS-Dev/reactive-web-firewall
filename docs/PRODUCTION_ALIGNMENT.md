@@ -1,6 +1,7 @@
 # Production alignment
 
-Version 0.2.1 was rebuilt from the operating components of a real deployment rather than from the earlier simplified prototype.
+Version 0.3.0 retains the production-aligned engine introduced in 0.2.1 while moving operational settings into one central server configuration and splitting detection signatures into validated rule modules.
+
 
 Aligned behaviours include:
 

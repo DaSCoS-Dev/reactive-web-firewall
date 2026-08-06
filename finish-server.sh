@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
 # Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
 # SPDX-License-Identifier: AGPL-3.0-or-later
-
 set -euo pipefail
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'Run as root' >&2; exit 1; }
-CONF=/etc/reactive-web-firewall/connection.conf
-[[ -r "$CONF" ]] || { echo "$CONF missing; rerun install.sh" >&2; exit 1; }
-# shellcheck disable=SC1090
-source "$CONF"
-KEY=/etc/reactive-web-firewall/keys/firewall_ed25519
-KNOWN=/etc/reactive-web-firewall/keys/known_hosts
-ssh -p "$FIREWALL_PORT" -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes \
-    -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN" -o ConnectTimeout=3 \
-    "$FIREWALL_TARGET" check
-systemctl daemon-reload
-systemctl enable --now reactive-web-fastban.service reactive-web-ban.service
-reactive-web-diagnose
+source /usr/local/lib/reactive-web-firewall/config.sh
+host="$(rwf_cfg firewall_host)"; port="$(rwf_cfg firewall_port 22)"; user="$(rwf_cfg firewall_user root)"
+key="$(rwf_cfg ssh_key /etc/reactive-web-firewall/keys/firewall_ed25519)"; known="$(rwf_cfg known_hosts /etc/reactive-web-firewall/keys/known_hosts)"
+target="$user@$host"; [[ "$host" == *:* ]] && target="$user@[$host]"
+ssh -p "$port" -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$target" check
+/usr/local/sbin/reactive-web-apply
+systemctl enable --now reactive-web-ban.service
+echo 'Restricted OpenWrt channel and watcher are active.'

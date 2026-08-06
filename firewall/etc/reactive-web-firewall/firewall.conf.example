@@ -1,21 +1,41 @@
+# Reactive Web Firewall - configurazione centrale lato OpenWrt
+# Reactive Web Firewall - central OpenWrt-side configuration
+#
 # Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
 # SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# SINTASSI / SYNTAX
+#   NOME=valore
+# Non inserire spazi intorno a = e non aggiungere commenti a fine riga.
+# Do not put spaces around = and do not append trailing comments.
+#
+# VALIDAZIONE / VALIDATION
+#   reactive-fw-ban check
+#
+# APPLICAZIONE / APPLY
+#   /etc/init.d/reactive-web-firewall restart
 
-# Reactive Web Firewall - OpenWrt side
-# auto uses the active banIP nftables blocklist when available, otherwise the
-# standalone table installed by this project.
+# Backend di persistenza:
+#   auto       usa banIP se i suoi set nftables sono attivi, altrimenti standalone
+#   banip      richiede e usa i set banIP
+#   standalone usa la tabella nftables inclusa nel progetto
 PERSIST_BACKEND=auto
 
-# Space-separated server addresses allowed to use the forced SSH command.
+# IP del server autorizzati a usare il comando SSH forzato. Separare con spazi.
+# Server IPs authorised to use the forced SSH command. Space-separated.
 ALLOWED_SERVER_IPS=192.0.2.10
 
+# Backend nftables autonomo / standalone nftables backend.
 TABLE_NAME=reactive_web_firewall
 RULESET=/etc/reactive-web-firewall/firewall.nft
 BLOCKLIST=/etc/reactive-web-firewall/blocklist
 
+# Integrazione banIP / banIP integration.
 BANIP_TABLE=banIP
 BANIP_SET_V4=blocklist.v4
 BANIP_SET_V6=blocklist.v6
 BANIP_BLOCKLIST=/etc/banip/banip.blocklist
 
+# 1 elimina anche le entry conntrack dopo il ban, 0 disabilita la pulizia.
+# 1 also removes conntrack entries after a ban, 0 disables cleanup.
 CONNTRACK_DROP=1

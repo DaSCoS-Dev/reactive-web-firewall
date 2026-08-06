@@ -11,7 +11,7 @@ Before=reactive-web-ban.service
 Type=oneshot
 ExecStart=/usr/local/sbin/reactive-web-fastban reload
 ExecReload=/usr/local/sbin/reactive-web-fastban reload
-ExecStop=/bin/sh -ec '/usr/sbin/nft delete table inet reactive_web_fastban >/dev/null 2>&1 || true'
+ExecStop=/usr/local/sbin/reactive-web-fastban stop
 RemainAfterExit=yes
 
 [Install]

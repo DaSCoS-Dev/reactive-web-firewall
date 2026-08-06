@@ -1,4 +1,4 @@
-# Reactive Web Firewall 0.2.1
+# Reactive Web Firewall 0.3.0
 
 Reactive Web Firewall collega un reverse proxy Apache a un firewall OpenWrt e reagisce a firme web ad alta confidenza in pochi millisecondi.
 
@@ -34,7 +34,7 @@ Il watcher interviene soltanto su firme considerate sufficientemente forti:
 - probe PHP generici con condizioni restrittive;
 - probe a `wp-login.php` con condizioni restrittive.
 
-Durata e disabilitazione delle singole famiglie sono configurabili in `/etc/reactive-web-firewall/rules.conf` e vengono rilette senza riavviare il servizio.
+Tutte le impostazioni server, comprese durata e disabilitazione delle famiglie, sono raccolte in `/etc/reactive-web-firewall/reactive-web-firewall.conf`. Le firme sono moduli documentati in `/etc/reactive-web-firewall/rules.d/`.
 
 ## Condizioni tecniche
 
@@ -73,8 +73,8 @@ La release è stata riallineata a una produzione con OpenWrt 25.12.2, kernel 6.1
 Estrarre l'archivio sul server:
 
 ```bash
-unzip reactive-web-firewall-0.2.1.zip
-cd reactive-web-firewall-0.2.1
+unzip reactive-web-firewall-0.3.0.zip
+cd reactive-web-firewall-0.3.0
 ```
 
 Controllare soltanto i prerequisiti server:
@@ -174,11 +174,15 @@ Il progetto installa:
 Il file definisce un formato indipendente:
 
 ```apache
-LogFormat "%h (%v:%p) ... apache_end_us=%{end:usec}t" reactive_web_combined
-GlobalLog ${APACHE_LOG_DIR}/reactive_web_access.log reactive_web_combined
+LogFormat "%h (%v:%p) ... apache_end_us=%{end:usec}t" reactive_web
+GlobalLog /var/log/apache2/reactive_web_access.log reactive_web
 ```
 
 Non copia né modifica VirtualHost applicativi. In particolare, configurazioni specifiche di siti raccolte durante lo sviluppo, non fanno parte della distribuzione.
+
+## Aggiornamento dalla serie 0.2
+
+Consultare [`docs/UPGRADE_0.2_TO_0.3_IT.md`](docs/UPGRADE_0.2_TO_0.3_IT.md).
 
 ## Gestione
 
@@ -190,10 +194,18 @@ sudo systemctl status reactive-web-ban.service
 sudo journalctl -t reactive-web-ban -o short-precise
 ```
 
-Configurazione effettiva:
+Configurazione effettiva e moduli caricati:
 
 ```bash
 sudo reactive-web-ban.pl --show-config
+sudo reactive-web-ban.pl --list-rules
+```
+
+Dopo aver modificato configurazione o regole:
+
+```bash
+sudo reactive-web-validate
+sudo reactive-web-apply
 ```
 
 Stato locale dei ban noti al watcher:
@@ -312,3 +324,7 @@ Chi modifica il software e lo rende disponibile agli utenti attraverso una
 rete deve rispettare anche gli obblighi previsti dalla sezione 13 della AGPL.
 
 Vedere [LICENSE](LICENSE), [NOTICE](NOTICE) e [AUTHORS.md](AUTHORS.md).
+
+## Configurazione centralizzata e regole modulari
+
+La versione 0.3.0 raccoglie tutte le impostazioni server in `reactive-web-firewall.conf` e separa le firme in moduli documentati `rules.d/*.pm`. Usare `reactive-web-validate` prima di applicare le modifiche con `reactive-web-apply`.

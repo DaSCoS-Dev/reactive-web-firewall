@@ -16,3 +16,5 @@ jobs:
         run: ./tests/check-syntax.sh
       - name: Self test
         run: ./tests/self-test.sh
+      - name: Hot reload safety
+        run: ./tests/hot-reload-test.sh

@@ -11,69 +11,47 @@ use File::Path qw(make_path);
 use File::Basename qw(dirname);
 use Fcntl qw(:flock);
 
-my $BUILD = 'reactive-web-firewall-0.2.1-production-aligned';
+my $BUILD = 'reactive-web-firewall-0.3.0-modular-rules';
 
-my $log_file     = '/var/log/apache2/reactive_web_access.log';
-my $regex_file   = '/usr/local/lib/reactive-web-firewall/detector.pm';
-my $config_file  = '/etc/reactive-web-firewall/rules.conf';
-my $allow_file   = '/etc/reactive-web-firewall/allowlist';
-my $state_file   = '/var/lib/reactive-web-firewall/active.tsv';
-my $active_dir   = '/run/reactive-web-firewall/active';
-my $ssh_key      = '/etc/reactive-web-firewall/keys/firewall_ed25519';
-my $known_hosts  = '/etc/reactive-web-firewall/keys/known_hosts';
-my $firewall     = 'root@192.0.2.1';
-my $firewall_port = 22;
-my $tail_sleep   = '0.1';
+my $config_file = $ENV{RWF_CONFIG} || '/etc/reactive-web-firewall/reactive-web-firewall.conf';
+my $core_file = '/usr/local/lib/reactive-web-firewall/core.pm';
 
-my $test_file    = '';
-my $test_line    = '';
-my $dry_run      = 0;
-my $show_help    = 0;
+my $test_file = '';
+my $test_line = '';
+my $dry_run = 0;
+my $show_help = 0;
 my $show_version = 0;
-my $show_config  = 0;
-my $list_state   = 0;
-my $forget_ip    = '';
-my $unban_ip     = '';
-
-# Local fast-ban configuration
-my $local_fastban_enabled         = 1;
-my $local_fastban_timeout_seconds = 300;
-my $local_fastban_nft             = '/usr/sbin/nft';
-my $local_fastban_ruleset         = '/etc/nftables.d/reactive-web-fastban.nft';
-my $local_fastban_table           = 'reactive_web_fastban';
+my $show_config = 0;
+my $validate_config = 0;
+my $list_rules = 0;
+my $list_state = 0;
+my $forget_ip = '';
+my $unban_ip = '';
 
 GetOptions(
-    'log=s'          => \$log_file,
-    'regex=s'        => \$regex_file,
-    'config=s'       => \$config_file,
-    'allow-file=s'   => \$allow_file,
-    'state-file=s'   => \$state_file,
-    'active-dir=s'   => \$active_dir,
-    'ssh-key=s'      => \$ssh_key,
-    'known-hosts=s'  => \$known_hosts,
-    'firewall=s'     => \$firewall,
-    'firewall-port=i'=> \$firewall_port,
-    'tail-sleep=s'   => \$tail_sleep,
-    'test-file=s'    => \$test_file,
-    'test-line=s'    => \$test_line,
-    'dry-run'        => \$dry_run,
-    'show-config'    => \$show_config,
-    'list-state'     => \$list_state,
-    'forget=s'       => \$forget_ip,
-    'unban=s'        => \$unban_ip,
-    'version'        => \$show_version,
-    'help'           => \$show_help,
+    'config=s' => \$config_file,
+    'core=s' => \$core_file,
+    'test-file=s' => \$test_file,
+    'test-line=s' => \$test_line,
+    'dry-run' => \$dry_run,
+    'show-config' => \$show_config,
+    'validate-config' => \$validate_config,
+    'list-rules' => \$list_rules,
+    'list-state' => \$list_state,
+    'forget=s' => \$forget_ip,
+    'unban=s' => \$unban_ip,
+    'version' => \$show_version,
+    'help' => \$show_help,
 ) or die "Parametri non validi. Usa --help\n";
 
-if ($show_version) {
-    print "$BUILD\n";
-    exit 0;
-}
+if ($show_version) { print "$BUILD\n"; exit 0; }
 
 if ($show_help) {
     print <<'HELP';
 Uso:
   reactive-web-ban.pl
+  reactive-web-ban.pl --validate-config
+  reactive-web-ban.pl --list-rules
   reactive-web-ban.pl --test-line 'riga Apache completa'
   reactive-web-ban.pl --test-file /percorso/log
   reactive-web-ban.pl --show-config
@@ -81,69 +59,61 @@ Uso:
   reactive-web-ban.pl --forget IP
   reactive-web-ban.pl --unban IP
 
-Il servizio segue in tempo quasi reale reactive_web_access.log e applica ban
-sul firewall OpenWrt con durata configurabile per famiglia di attacco.
+Configurazione centrale:
+  /etc/reactive-web-firewall/reactive-web-firewall.conf
 
-Sintassi durata nel file di configurazione:
-  0, off, disabled       regola disabilitata
-  1, permanent, perm     ban permanente tramite sync-add
-  3600                   secondi
-  30m, 4h, 3d, 2w        minuti, ore, giorni, settimane
+Moduli delle firme:
+  /etc/reactive-web-firewall/rules.d/*.pm
 
-Il watcher crea un marker in /run/reactive-web-firewall/active.
-Il marker evita di ripetere lo stesso ban durante la finestra di soppressione
-e può essere consultato anche da integrazioni esterne opzionali.
+Validazione completa dopo una modifica:
+  sudo reactive-web-validate
 
-Se local_socket_kill è attivo, il watcher usa ss -K sul proxy per chiudere
-i socket TCP già stabiliti verso l'IP aggressore. Può eseguire un primo sweep
-prima del ban OpenWrt e un secondo sweep dopo il ritorno positivo del firewall.
+Le policy e i moduli delle regole vengono ricaricati automaticamente quando
+cambiano. Per modifiche a percorsi, SSH, packet ring o porte eseguire anche:
+  sudo reactive-web-apply
 HELP
     exit 0;
 }
 
--f $regex_file or die "Detector non trovato: $regex_file\n";
-
-our %globlogs;
-require $regex_file;
-
-for my $name (qw(parse_apache_line normalize_request_uri decode_uri_for_detection sql_injection_signature is_bad_ua)) {
+-f $core_file or die "Core non trovato: $core_file\n";
+require $core_file;
+for my $name (qw(parse_apache_line normalize_request_uri decode_uri_for_detection)) {
     no strict 'refs';
-    defined &{$name} or die "Funzione $name non trovata in $regex_file\n";
+    defined &{$name} or die "Funzione $name non trovata in $core_file\n";
 }
 
-my %KNOWN_RULES = map { $_ => 1 } qw(
-    git_exploit
-    env_exploit
-    framework_exploit
-    xmlrpc
-    wp_batch
-    sql_injection
-    known_webshell
-    php_probe
-    wp_login
-);
-
-my %DEFAULT_POLICY = (
-    git_exploit       => 'permanent',
-    env_exploit       => 'permanent',
-    framework_exploit => 'permanent',
-    xmlrpc             => '3d',
-    wp_batch           => '3d',
-    sql_injection      => '2w',
-    known_webshell     => 'permanent',
-    php_probe          => '1h',
-    wp_login           => '4h',
-);
-
-my $DEFAULT_DUPLICATE_SUPPRESS = '90s';
+# Runtime settings. Values are replaced atomically only after successful validation.
+my $log_file = '/var/log/apache2/reactive_web_access.log';
+my $rules_directory = '/etc/reactive-web-firewall/rules.d';
+my $allow_file = '/etc/reactive-web-firewall/allowlist';
+my $state_file = '/var/lib/reactive-web-firewall/active.tsv';
+my $active_dir = '/run/reactive-web-firewall/active';
+my $tail_sleep = '0.1';
+my $logger_tag = 'reactive-web-ban';
+my $ssh_key = '/etc/reactive-web-firewall/keys/firewall_ed25519';
+my $known_hosts = '/etc/reactive-web-firewall/keys/known_hosts';
+my $firewall = 'root@192.0.2.1';
+my $firewall_port = 22;
+my $ssh_connect_timeout = 2;
+my $ssh_control_persist = 600;
+my $ssh_control_path = '/run/reactive-web-firewall/ssh-%C';
+my $remote_host_label = 'proxy';
 my $duplicate_suppress_seconds = 90;
+my $local_fastban_enabled = 1;
+my $local_fastban_timeout_seconds = 300;
+my $local_fastban_nft = '/usr/sbin/nft';
+my $local_fastban_table = 'reactive_web_fastban';
+my $local_fastban_helper = '/usr/local/sbin/reactive-web-fastban';
 my $local_socket_kill = 1;
 my $local_socket_post_sweep = 1;
 my @local_socket_ports = (80, 443);
 
-my %policy = ();
-my $config_mtime = -1;
-my %allow = ();
+my @rule_modules;
+my %rule_by_name;
+my %policy;
+my $runtime_fingerprint = '';
+my $last_reload_error = '';
+my %allow;
 my $allow_mtime = -1;
 my $last_cleanup = 0;
 
@@ -151,16 +121,16 @@ sub logmsg {
     my ($level, $message) = @_;
     $level ||= 'notice';
     $message ||= '';
-    system('logger', '-p', "user.$level", '-t', 'reactive-web-ban', '--', $message);
-    if ($test_file ne '' || $test_line ne '' || $dry_run || $show_config || $list_state) {
-        print STDERR "reactive-web-ban[$level]: $message\n";
+    system('logger', '-p', "user.$level", '-t', $logger_tag, '--', $message);
+    if ($test_file ne '' || $test_line ne '' || $dry_run || $show_config || $validate_config || $list_rules || $list_state) {
+        print STDERR "$logger_tag\[$level\]: $message\n";
     }
 }
 
 sub valid_ip {
     my ($ip) = @_;
     return 0 unless defined $ip && $ip ne '';
-    return 1 if inet_pton(AF_INET,  $ip);
+    return 1 if inet_pton(AF_INET, $ip);
     return 1 if inet_pton(AF_INET6, $ip);
     return 0;
 }
@@ -170,165 +140,234 @@ sub parse_duration {
     $raw = '' unless defined $raw;
     $raw =~ s/^\s+|\s+$//g;
     my $v = lc($raw);
-
-    return { enabled => 0, permanent => 0, seconds => 0, label => 'off' }
+    return { enabled=>0, permanent=>0, seconds=>0, label=>'off' }
         if $v eq '' || $v eq '0' || $v eq 'off' || $v eq 'disabled' || $v eq 'no';
-
-    return { enabled => 1, permanent => 1, seconds => 0, label => 'permanent' }
+    return { enabled=>1, permanent=>1, seconds=>0, label=>'permanent' }
         if $v eq '1' || $v eq 'permanent' || $v eq 'perm' || $v eq 'forever';
-
     if ($v =~ /^(\d+)([smhdw]?)$/) {
-        my ($n, $unit) = ($1, $2);
+        my ($n,$unit)=($1,$2);
         die "Durata non valida: $raw\n" if $n <= 0;
-        my %mult = ('' => 1, s => 1, m => 60, h => 3600, d => 86400, w => 604800);
-        my $seconds = $n * $mult{$unit};
-        return { enabled => 1, permanent => 0, seconds => $seconds, label => $v };
+        my %mult=(''=>1,s=>1,m=>60,h=>3600,d=>86400,w=>604800);
+        return { enabled=>1, permanent=>0, seconds=>$n*$mult{$unit}, label=>$v };
     }
-
     die "Durata non valida: $raw\n";
 }
 
 sub parse_bool {
-    my ($raw, $name) = @_;
-    $raw = '' unless defined $raw;
+    my ($raw,$name)=@_;
+    $raw='' unless defined $raw;
     $raw =~ s/^\s+|\s+$//g;
-    my $v = lc($raw);
+    my $v=lc($raw);
     return 1 if $v =~ /^(?:1|yes|true|on|enabled)$/;
     return 0 if $v =~ /^(?:0|no|false|off|disabled)$/;
     die "$name non valido: $raw\n";
 }
 
 sub parse_port_list {
-    my ($raw) = @_;
-    $raw = '' unless defined $raw;
+    my ($raw,$name)=@_;
+    $name ||= 'ports';
     my @ports;
-    for my $part (split(/[,\s]+/, $raw)) {
+    for my $part (split(/[,\s]+/, $raw // '')) {
         next if $part eq '';
-        die "Porta locale non valida: $part\n" unless $part =~ /^\d+$/ && $part >= 1 && $part <= 65535;
-        push @ports, 0 + $part;
+        die "$name: porta non valida $part\n" unless $part =~ /^\d+$/ && $part >= 1 && $part <= 65535;
+        push @ports, 0+$part;
     }
-    die "local_socket_ports non può essere vuoto\n" unless @ports;
-    my %seen;
-    @ports = grep { !$seen{$_}++ } @ports;
-    return @ports;
+    die "$name non può essere vuoto\n" unless @ports;
+    my %seen; return grep { !$seen{$_}++ } @ports;
 }
 
-sub parse_config_file {
-    my %raw = %DEFAULT_POLICY;
-    my $raw_duplicate_suppress = $DEFAULT_DUPLICATE_SUPPRESS;
-    my $raw_local_fastban_enabled = 'on';
-    my $raw_local_fastban_timeout = '300s';
-    my $raw_local_socket_kill = 'on';
-    my $raw_local_socket_post_sweep = 'on';
-    my $raw_local_socket_ports = '80,443';
+sub read_config_raw {
+    my ($path)=@_;
+    -r $path or die "Configurazione non leggibile: $path\n";
+    open(my $fh,'<',$path) or die "Impossibile leggere $path: $!\n";
+    my %raw; my $line_no=0;
+    while (my $line=<$fh>) {
+        $line_no++;
+        chomp($line); $line =~ s/\r$//;
+        next if $line =~ /^\s*(?:#|$)/;
+        my ($key,$value) = $line =~ /^\s*([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/;
+        die "$path:$line_no: sintassi non valida\n" unless defined $key;
+        $key=lc($key);
+        die "$path:$line_no: chiave duplicata $key\n" if exists $raw{$key};
+        $raw{$key}=$value;
+    }
+    close($fh);
+    return \%raw;
+}
 
-    if (-e $config_file) {
-        open(my $fh, '<', $config_file) or die "Impossibile leggere $config_file: $!\n";
-        while (my $line = <$fh>) {
-            chomp($line);
-            $line =~ s/#.*$//;
-            $line =~ s/^\s+|\s+$//g;
-            next if $line eq '';
+sub cfg_value {
+    my ($raw,$key,$default)=@_;
+    return exists $raw->{$key} ? $raw->{$key} : $default;
+}
 
-            my ($key, $value) = $line =~ /^([A-Za-z0-9_]+)\s*(?:=|:)\s*(.*?)\s*$/;
-            die "Riga configurazione non valida: $line\n" unless defined $key;
-            $key = lc($key);
-            if ($key eq 'duplicate_suppress' || $key eq 'lfd_suppress') {
-                $raw_duplicate_suppress = $value;
-                next;
-            }
-            if ($key eq 'local_fastban_enabled') {
-                $raw_local_fastban_enabled = $value;
-                next;
-            }
-            if ($key eq 'local_fastban_timeout') {
-                $raw_local_fastban_timeout = $value;
-                next;
-            }
-            if ($key eq 'local_socket_kill') {
-                $raw_local_socket_kill = $value;
-                next;
-            }
-            if ($key eq 'local_socket_post_sweep') {
-                $raw_local_socket_post_sweep = $value;
-                next;
-            }
-            if ($key eq 'local_socket_ports') {
-                $raw_local_socket_ports = $value;
-                next;
-            }
-            die "Regola sconosciuta nel file di configurazione: $key\n" unless $KNOWN_RULES{$key};
-            $raw{$key} = $value;
+sub rule_files {
+    my ($dir)=@_;
+    -d $dir or die "Directory regole non trovata: $dir\n";
+    opendir(my $dh,$dir) or die "Impossibile aprire $dir: $!\n";
+    my @files = sort map { "$dir/$_" } grep { /\.pm$/ && -f "$dir/$_" } readdir($dh);
+    closedir($dh);
+    die "Nessun modulo .pm trovato in $dir\n" unless @files;
+    return @files;
+}
+
+sub module_fingerprint {
+    my ($config,$dir)=@_;
+    my @paths=($config,rule_files($dir));
+    return join('|', map { my @s=stat($_); $_ . ':' . ($s[1]||0) . ':' . ($s[9]||0) . ':' . ($s[7]||0) } @paths);
+}
+
+sub load_rule_modules {
+    my ($dir)=@_;
+    my @loaded; my %names;
+    for my $file (rule_files($dir)) {
+        my $def = do $file;
+        die "Errore caricando $file: $@\n" if $@;
+        die "Errore leggendo $file: $!\n" unless defined $def;
+        die "$file deve restituire un hash reference\n" unless ref($def) eq 'HASH';
+        for my $field (qw(name description priority default_policy detect)) {
+            die "$file: campo obbligatorio mancante: $field\n" unless exists $def->{$field};
         }
-        close($fh);
+        die "$file: name non valido\n" unless $def->{name} =~ /^[a-z][a-z0-9_]*$/;
+        die "$file: name duplicato $def->{name}\n" if $names{$def->{name}}++;
+        die "$file: priority deve essere intera\n" unless $def->{priority} =~ /^-?\d+$/;
+        die "$file: detect deve essere una funzione\n" unless ref($def->{detect}) eq 'CODE';
+        parse_duration($def->{default_policy});
+        $def->{source_file}=$file;
+        push @loaded,$def;
     }
-
-    my %new_policy;
-    for my $rule (sort keys %KNOWN_RULES) {
-        my $parsed = parse_duration($raw{$rule});
-        $parsed->{raw} = $raw{$rule};
-        $new_policy{$rule} = $parsed;
-    }
-
-    my $suppress = lc($raw_duplicate_suppress // '');
-    $suppress =~ s/^\s+|\s+$//g;
-    die "duplicate_suppress non valido: $raw_duplicate_suppress\n"
-        unless $suppress =~ /^(\d+)([smhdw]?)$/;
-    my ($n, $unit) = ($1, $2);
-    my %mult = ('' => 1, s => 1, m => 60, h => 3600, d => 86400, w => 604800);
-    my $suppress_seconds = $n * $mult{$unit};
-    die "duplicate_suppress deve essere tra 10 e 600 secondi\n"
-        if $suppress_seconds < 10 || $suppress_seconds > 600;
-
-    my $fastban_enabled = parse_bool($raw_local_fastban_enabled, 'local_fastban_enabled');
-    my $fastban_timeout_parsed = parse_duration($raw_local_fastban_timeout);
-    die "local_fastban_timeout deve essere temporaneo\n"
-        if !$fastban_timeout_parsed->{enabled} || $fastban_timeout_parsed->{permanent};
-    my $fastban_timeout = $fastban_timeout_parsed->{seconds};
-    die "local_fastban_timeout deve essere tra 10 e 3600 secondi\n"
-        if $fastban_timeout < 10 || $fastban_timeout > 3600;
-
-    my $socket_kill = parse_bool($raw_local_socket_kill, 'local_socket_kill');
-    my $post_sweep = parse_bool($raw_local_socket_post_sweep, 'local_socket_post_sweep');
-    my @socket_ports = parse_port_list($raw_local_socket_ports);
-
-    return (\%new_policy, $suppress_seconds, $fastban_enabled, $fastban_timeout, $socket_kill, $post_sweep, \@socket_ports);
+    @loaded = sort { $a->{priority} <=> $b->{priority} || $a->{name} cmp $b->{name} } @loaded;
+    return @loaded;
 }
 
-sub load_config {
-    my ($force) = @_;
-    my $mtime = (-e $config_file) ? ((stat($config_file))[9] || 0) : 0;
-    return if !$force && $mtime == $config_mtime;
+sub build_runtime {
+    my ($raw,$rules)=@_;
+    my %known = map { $_=>1 } qw(
+        apache_log_file apache_log_rotate_frequency apache_log_rotate_count rules_directory allowlist_file state_file active_directory
+        tail_sleep logger_tag firewall_host firewall_port firewall_user ssh_key
+        known_hosts ssh_connect_timeout ssh_control_persist ssh_control_path remote_host_label
+        local_fastban_enabled local_fastban_timeout local_fastban_ports
+        local_fastban_table local_fastban_priority local_socket_kill
+        local_socket_post_sweep local_socket_ports duplicate_suppress
+        packet_ring_enabled packet_ring_interface packet_ring_snaplen
+        packet_ring_buffer_kb packet_ring_file_size_mb packet_ring_file_count
+        packet_ring_directory packet_ring_basename packet_ring_filter report_output_directory
+    );
+    $known{'policy_'.$_->{name}}=1 for @$rules;
+    for my $key (keys %$raw) { die "Chiave di configurazione sconosciuta: $key\n" unless $known{$key}; }
 
-    my ($new_ref, $new_suppress, $new_fastban_enabled, $new_fastban_timeout, $new_socket_kill, $new_post_sweep, $new_ports_ref);
-    my $ok = eval {
-        ($new_ref, $new_suppress, $new_fastban_enabled, $new_fastban_timeout, $new_socket_kill, $new_post_sweep, $new_ports_ref) = parse_config_file();
+    my %r;
+    $r{log_file}=cfg_value($raw,'apache_log_file','/var/log/apache2/reactive_web_access.log');
+    $r{rules_directory}=cfg_value($raw,'rules_directory','/etc/reactive-web-firewall/rules.d');
+    $r{allow_file}=cfg_value($raw,'allowlist_file','/etc/reactive-web-firewall/allowlist');
+    $r{state_file}=cfg_value($raw,'state_file','/var/lib/reactive-web-firewall/active.tsv');
+    $r{active_dir}=cfg_value($raw,'active_directory','/run/reactive-web-firewall/active');
+    $r{tail_sleep}=cfg_value($raw,'tail_sleep','0.1');
+    die "tail_sleep non valido\n" unless $r{tail_sleep} =~ /^\d+(?:\.\d+)?$/ && $r{tail_sleep} > 0 && $r{tail_sleep} <= 5;
+    $r{logger_tag}=cfg_value($raw,'logger_tag','reactive-web-ban');
+    die "logger_tag non valido\n" unless $r{logger_tag} =~ /^[A-Za-z0-9_.-]+$/;
+
+    my $host=cfg_value($raw,'firewall_host','192.0.2.1');
+    my $user=cfg_value($raw,'firewall_user','root');
+    die "firewall_host non valido\n" unless $host =~ /^[A-Za-z0-9_.:-]+$/;
+    die "firewall_user non valido\n" unless $user =~ /^[A-Za-z_][A-Za-z0-9_-]*$/;
+    $r{firewall}=($host =~ /:/) ? "$user\@[$host]" : "$user\@$host";
+    $r{firewall_port}=0+cfg_value($raw,'firewall_port',22);
+    die "firewall_port non valida\n" unless $r{firewall_port}>=1 && $r{firewall_port}<=65535;
+    $r{ssh_key}=cfg_value($raw,'ssh_key','/etc/reactive-web-firewall/keys/firewall_ed25519');
+    $r{known_hosts}=cfg_value($raw,'known_hosts','/etc/reactive-web-firewall/keys/known_hosts');
+    $r{ssh_connect_timeout}=0+cfg_value($raw,'ssh_connect_timeout',2);
+    $r{ssh_control_persist}=0+cfg_value($raw,'ssh_control_persist',600);
+    $r{ssh_control_path}=cfg_value($raw,'ssh_control_path','/run/reactive-web-firewall/ssh-%C');
+    $r{remote_host_label}=cfg_value($raw,'remote_host_label','proxy');
+    die "remote_host_label non valido\n" unless $r{remote_host_label} =~ /^[A-Za-z0-9_.-]+$/;
+    die "ssh_connect_timeout non valido\n" unless $r{ssh_connect_timeout}>=1 && $r{ssh_connect_timeout}<=30;
+    die "ssh_control_persist non valido\n" unless $r{ssh_control_persist}>=0 && $r{ssh_control_persist}<=86400;
+
+    my $dup=parse_duration(cfg_value($raw,'duplicate_suppress','90s'));
+    die "duplicate_suppress deve essere temporaneo\n" if !$dup->{enabled} || $dup->{permanent};
+    die "duplicate_suppress deve essere tra 10 e 600 secondi\n" if $dup->{seconds}<10 || $dup->{seconds}>600;
+    $r{duplicate_suppress_seconds}=$dup->{seconds};
+
+    $r{local_fastban_enabled}=parse_bool(cfg_value($raw,'local_fastban_enabled','on'),'local_fastban_enabled');
+    my $fb=parse_duration(cfg_value($raw,'local_fastban_timeout','5m'));
+    die "local_fastban_timeout deve essere temporaneo\n" if !$fb->{enabled} || $fb->{permanent};
+    die "local_fastban_timeout deve essere tra 10 e 3600 secondi\n" if $fb->{seconds}<10 || $fb->{seconds}>3600;
+    $r{local_fastban_timeout_seconds}=$fb->{seconds};
+    $r{local_fastban_table}=cfg_value($raw,'local_fastban_table','reactive_web_fastban');
+    die "local_fastban_table non valido\n" unless $r{local_fastban_table}=~/^[A-Za-z_][A-Za-z0-9_]*$/;
+    $r{local_socket_kill}=parse_bool(cfg_value($raw,'local_socket_kill','on'),'local_socket_kill');
+    $r{local_socket_post_sweep}=parse_bool(cfg_value($raw,'local_socket_post_sweep','on'),'local_socket_post_sweep');
+    my @ports=parse_port_list(cfg_value($raw,'local_socket_ports','80,443'),'local_socket_ports');
+    $r{local_socket_ports}=\@ports;
+
+    my %p;
+    for my $def (@$rules) {
+        my $raw_policy=cfg_value($raw,'policy_'.$def->{name},$def->{default_policy});
+        my $parsed=parse_duration($raw_policy); $parsed->{raw}=$raw_policy; $p{$def->{name}}=$parsed;
+    }
+    $r{policy}=\%p;
+    return \%r;
+}
+
+sub install_runtime {
+    my ($r,$rules,$fingerprint)=@_;
+    $log_file=$r->{log_file}; $rules_directory=$r->{rules_directory};
+    my $old_allow_file=$allow_file;
+    $allow_file=$r->{allow_file}; $state_file=$r->{state_file}; $active_dir=$r->{active_dir};
+    $allow_mtime=-1 if $allow_file ne $old_allow_file;
+    $tail_sleep=$r->{tail_sleep}; $logger_tag=$r->{logger_tag};
+    $firewall=$r->{firewall}; $firewall_port=$r->{firewall_port};
+    $ssh_key=$r->{ssh_key}; $known_hosts=$r->{known_hosts};
+    $ssh_connect_timeout=$r->{ssh_connect_timeout}; $ssh_control_persist=$r->{ssh_control_persist};
+    $ssh_control_path=$r->{ssh_control_path}; $remote_host_label=$r->{remote_host_label};
+    $duplicate_suppress_seconds=$r->{duplicate_suppress_seconds};
+    $local_fastban_enabled=$r->{local_fastban_enabled};
+    $local_fastban_timeout_seconds=$r->{local_fastban_timeout_seconds};
+    $local_fastban_table=$r->{local_fastban_table};
+    $local_socket_kill=$r->{local_socket_kill};
+    $local_socket_post_sweep=$r->{local_socket_post_sweep};
+    @local_socket_ports=@{$r->{local_socket_ports}};
+    @rule_modules=@$rules; %rule_by_name=map { $_->{name}=>$_ } @rule_modules;
+    %policy=%{$r->{policy}}; $runtime_fingerprint=$fingerprint;
+}
+
+sub reload_runtime {
+    my ($force)=@_;
+    my $changed = 0;
+    my $ok=eval {
+        my $raw=read_config_raw($config_file);
+        my $dir=cfg_value($raw,'rules_directory','/etc/reactive-web-firewall/rules.d');
+        my $fingerprint=module_fingerprint($config_file,$dir);
+        if ($force || $fingerprint ne $runtime_fingerprint) {
+            my @rules=load_rule_modules($dir);
+            my $runtime=build_runtime($raw,\@rules);
+            install_runtime($runtime,\@rules,$fingerprint);
+            $changed = 1;
+        }
         1;
     };
     if (!$ok) {
-        my $err = $@ || 'errore sconosciuto';
-        chomp($err);
-        die "$err\n" if $force;
-        logmsg('err', "config-reload-failed error=[$err]");
-        return;
+        my $err=$@ || 'errore sconosciuto'; chomp($err);
+        die "$err\n" if $force || $runtime_fingerprint eq '';
+        if ($err ne $last_reload_error) {
+            logmsg('err',"runtime-reload-failed error=[$err]");
+            $last_reload_error=$err;
+        }
+        return 0;
     }
-
-    %policy = %{$new_ref};
-    $duplicate_suppress_seconds = $new_suppress;
-    $local_fastban_enabled = $new_fastban_enabled;
-    $local_fastban_timeout_seconds = $new_fastban_timeout;
-    $local_socket_kill = $new_socket_kill;
-    $local_socket_post_sweep = $new_post_sweep;
-    @local_socket_ports = @{$new_ports_ref};
-    $config_mtime = $mtime;
-    logmsg('notice', 'config-reloaded file=' . $config_file
-        . ' duplicate_suppress=' . $duplicate_suppress_seconds
-        . ' local_fastban_enabled=' . ($local_fastban_enabled ? 'on' : 'off')
-        . ' local_fastban_timeout=' . $local_fastban_timeout_seconds
-        . ' local_socket_kill=' . ($local_socket_kill ? 'on' : 'off')
-        . ' local_socket_post_sweep=' . ($local_socket_post_sweep ? 'on' : 'off')
-        . ' local_socket_ports=' . join(',', @local_socket_ports));
+    if ($changed) {
+        $last_reload_error='';
+        logmsg('notice','runtime-reloaded config='.$config_file.' rules='.scalar(@rule_modules)
+            .' firewall='.$firewall.' local_fastban='.($local_fastban_enabled?'on':'off'));
+    }
+    return 1;
 }
+
+sub policy_for {
+    my ($rule)=@_;
+    return $policy{$rule};
+}
+
 
 sub load_allowlist {
     my $mtime = (-e $allow_file) ? ((stat($allow_file))[9] || 0) : 0;
@@ -476,123 +515,41 @@ sub maybe_cleanup {
     cleanup_state_and_markers();
 }
 
-sub policy_for {
-    my ($rule) = @_;
-    load_config(0);
-    return $policy{$rule};
-}
 
 sub classify_line {
-    my ($line) = @_;
-    my $r = parse_apache_line($line);
+    my ($line)=@_;
+    reload_runtime(0);
+    my $r=parse_apache_line($line);
     return unless $r;
 
-    my $ip      = $r->{ip} || '';
-    my $method  = uc($r->{method} || '');
-    my $raw_uri = $r->{uri} || '';
-    my $vhost   = $r->{vhost} || '-';
-    my $status  = $r->{status} || '-';
-    my $ref     = $r->{ref} || '-';
-    my $ua      = $r->{ua} || '-';
-
+    my $ip=$r->{ip}||''; my $method=uc($r->{method}||'');
     return unless valid_ip($ip);
     return unless $method =~ /^(?:GET|POST|HEAD)$/;
 
-    my ($uri, $uri_path, $had_repeated_slash) = normalize_request_uri($raw_uri);
-    my $hard_uri = decode_uri_for_detection($uri);
-    my $hard_path = $hard_uri;
-    $hard_path =~ s/[?#].*$//;
+    my $raw_uri=$r->{uri}||'';
+    my ($uri,$uri_path,$had_repeated_slash)=normalize_request_uri($raw_uri);
+    my $decoded_uri=decode_uri_for_detection($uri);
+    my $decoded_path=$decoded_uri; $decoded_path =~ s/[?#].*$//;
 
-    my $sqli = sql_injection_signature($uri);
-    if ($sqli ne '') {
+    my $ctx={
+        ip=>$ip, vhost=>$r->{vhost}||'-', method=>$method,
+        raw_uri=>$raw_uri, uri=>$uri, uri_path=>$uri_path,
+        decoded_uri=>$decoded_uri, decoded_path=>$decoded_path,
+        had_repeated_slash=>$had_repeated_slash,
+        status=>$r->{status}||'-', ref=>$r->{ref}||'-', ua=>$r->{ua}||'-',
+    };
+
+    for my $def (@rule_modules) {
+        my $active_policy = $policy{$def->{name}};
+        next unless $active_policy && $active_policy->{enabled};
+        my $signature=$def->{detect}->($ctx);
+        next unless defined $signature && $signature ne '';
         return {
-            ip=>$ip, rule=>'sql_injection', signature=>$sqli, vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
+            ip=>$ip, rule=>$def->{name}, signature=>$signature,
+            vhost=>$ctx->{vhost}, method=>$method, raw_uri=>$raw_uri,
+            uri=>$uri, status=>$ctx->{status},
         };
     }
-
-    if ($hard_uri =~ m{^/wp-json/batch/v1(?:/|$|[?#])}
-        || $hard_uri =~ m{(?:\?|[&;])rest_route=/batch/v1(?:/|$|[&#;])}) {
-        return {
-            ip=>$ip, rule=>'wp_batch', signature=>'wordpress-batch-v1', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
-    if ($hard_uri =~ m{(?:^|/)\.git(?:/|$|[?#])}) {
-        return {
-            ip=>$ip, rule=>'git_exploit', signature=>'git-repository-probe', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
-    if ($hard_uri =~ m{(?:^|/)\.env(?:[._-][^/?#]*)?(?:$|[/?#])}
-        || $hard_uri =~ m{(?:^|/)\.aws/credentials(?:$|[?#])}
-        || $hard_uri =~ m{(?:^|/)\.vscode/sftp\.json(?:$|[?#])}
-        || $hard_uri =~ m{(?:^|/)\.ds_store(?:$|[?#])}
-        || $hard_uri =~ m{(?:^|/)wp-config\.php(?:$|[?#])}) {
-        return {
-            ip=>$ip, rule=>'env_exploit', signature=>'secret-credential-probe', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
-    if ($hard_uri =~ m{/vendor/(?:[^/?#]+/)*phpunit(?:/|$|[?#])}
-        || $hard_uri =~ m{/phpunit(?:/|$|[?#])}) {
-        return {
-            ip=>$ip, rule=>'framework_exploit', signature=>'phpunit-probe', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
-    if ($hard_path eq '/xmlrpc.php') {
-        return {
-            ip=>$ip, rule=>'xmlrpc', signature=>'xmlrpc', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
-    if ($hard_uri =~ m{/(?:zwso|mah|shoha|alpha|alpa|alfa|chosen|goods|wp_filemanager|shelp|ms-themes|gifclass|txets|wp_mna|lock360|o-simple|this_is_a_new_hello_world)\.php(?:$|[?#])}i
-        || $hard_uri =~ m{^/\.wp/wso\.php(?:$|[?#])}i
-        || $hard_uri =~ m{^/wp-content/plugins/hellopress/[^?#]*\.php(?:$|[?#])}i) {
-        return {
-            ip=>$ip, rule=>'known_webshell', signature=>'known-webshell-probe', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
-    if ($hard_path =~ m{(?:^|/)wp-login\.php$}i
-        && $status =~ /^(?:301|302|403|404|503)$/
-        && ($ref eq '-' || $ref eq '' || $ref =~ m{/wp-login\.php(?:$|[?#])}i)) {
-        return {
-            ip=>$ip, rule=>'wp_login', signature=>'wp-login-probe', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
-    my $is_ert = ($hard_path eq '/wp-content/plugins/easy-responsive-tabs/assets/css/ert_css.php'
-        || $hard_path eq '/wp-content/plugins/easy-responsive-tabs/assets/js/ert_js.php') ? 1 : 0;
-
-    my %safe_php = map { $_ => 1 } qw(
-        index.php admin.php login.php wp-login.php xmlrpc.php wp-cron.php
-        wp-comments-post.php wp-trackback.php wp-signup.php wp-activate.php
-        admin-ajax.php
-    );
-    my ($basename) = $hard_path =~ m{/([^/]+)$};
-    $basename ||= '';
-
-    if (!$is_ert
-        && $hard_path =~ m{^/[a-z0-9][a-z0-9_.-]{0,50}\.php$}i
-        && !$safe_php{lc($basename)}
-        && $status =~ /^(?:301|302|403|404|410|503)$/
-        && ($ref eq '-' || $ref eq '')
-        && ($ua eq '-' || $ua eq '' || is_bad_ua($ua))) {
-        return {
-            ip=>$ip, rule=>'php_probe', signature=>'generic-php-probe', vhost=>$vhost,
-            method=>$method, raw_uri=>$raw_uri, uri=>$uri, status=>$status,
-        };
-    }
-
     return;
 }
 
@@ -604,7 +561,7 @@ sub remote_command_for {
     }
     my $source = 'CUSTOM_IMMEDIATE_' . $rule;
     $source =~ s/[^A-Za-z0-9_]/_/g;
-    return "temp-add $ip $p->{seconds} proxy $source";
+    return "temp-add $ip $p->{seconds} $remote_host_label $source";
 }
 
 sub run_quiet_command {
@@ -669,11 +626,7 @@ sub local_fastban_add {
             );
 
             if ($table_rc != 0) {
-                my $load_rc = run_quiet_command(
-                    $local_fastban_nft,
-                    '-f',
-                    $local_fastban_ruleset,
-                );
+                my $load_rc = run_quiet_command($local_fastban_helper, 'reload');
 
                 if ($load_rc == 0) {
                     $rc = run_quiet_command(
@@ -900,13 +853,13 @@ sub run_remote {
         '-o', 'IdentitiesOnly=yes',
         '-o', 'StrictHostKeyChecking=yes',
         '-o', "UserKnownHostsFile=$known_hosts",
-        '-o', 'ConnectTimeout=2',
+        '-o', "ConnectTimeout=$ssh_connect_timeout",
         '-o', 'ConnectionAttempts=1',
         '-o', 'ServerAliveInterval=2',
         '-o', 'ServerAliveCountMax=1',
         '-o', 'ControlMaster=auto',
-        '-o', 'ControlPersist=600',
-        '-o', 'ControlPath=/run/reactive-web-firewall/ssh-%C',
+        '-o', "ControlPersist=$ssh_control_persist",
+        '-o', "ControlPath=$ssh_control_path",
         $firewall,
         $command,
     );
@@ -1371,84 +1324,86 @@ sub process_line {
     apply_ban($m, $line_seen_at, $match_at, $line_seen_real_us, $apache_end_us);
 }
 
-die "Porta firewall non valida: $firewall_port\n" unless $firewall_port >= 1 && $firewall_port <= 65535;
-load_config(1);
+
+reload_runtime(1);
 ensure_dirs();
 
+if ($validate_config) {
+    print "Configurazione valida: $config_file\n";
+    print "Moduli caricati: ".scalar(@rule_modules)."\n";
+    print "Firewall: $firewall:$firewall_port\n";
+    exit 0;
+}
+
 if ($show_config) {
+    print "config_file=$config_file\n";
+    print "apache_log_file=$log_file\n";
+    print "rules_directory=$rules_directory\n";
+    print "allowlist_file=$allow_file\n";
+    print "firewall=$firewall\n";
+    print "firewall_port=$firewall_port\n";
     print "duplicate_suppress=${duplicate_suppress_seconds}s\n";
-    print "local_fastban_enabled=" . ($local_fastban_enabled ? 'on' : 'off') . "\n";
+    print "local_fastban_enabled=".($local_fastban_enabled?'on':'off')."\n";
     print "local_fastban_timeout=${local_fastban_timeout_seconds}s\n";
-    print "local_socket_kill=" . ($local_socket_kill ? 'on' : 'off') . "\n";
-    print "local_socket_post_sweep=" . ($local_socket_post_sweep ? 'on' : 'off') . "\n";
-    print "local_socket_ports=" . join(',', @local_socket_ports) . "\n";
-    for my $rule (sort keys %KNOWN_RULES) {
-        my $p = $policy{$rule};
-        my $value = !$p->{enabled} ? 'off' : ($p->{permanent} ? 'permanent' : $p->{seconds} . 's');
-        print "$rule=$value\n";
+    print "local_socket_kill=".($local_socket_kill?'on':'off')."\n";
+    print "local_socket_post_sweep=".($local_socket_post_sweep?'on':'off')."\n";
+    print "local_socket_ports=".join(',',@local_socket_ports)."\n";
+    for my $def (@rule_modules) {
+        my $p=$policy{$def->{name}};
+        my $value=!$p->{enabled}?'off':($p->{permanent}?'permanent':$p->{seconds}.'s');
+        print "policy_$def->{name}=$value\n";
+    }
+    exit 0;
+}
+
+if ($list_rules) {
+    for my $def (@rule_modules) {
+        my $p=$policy{$def->{name}};
+        my $value=!$p->{enabled}?'off':($p->{permanent}?'permanent':$p->{seconds}.'s');
+        print join("\t",$def->{priority},$def->{name},$value,$def->{description},$def->{source_file}),"\n";
     }
     exit 0;
 }
 
 if ($list_state) {
     cleanup_state_and_markers();
-    open(my $fh, '<', $state_file) or exit 0;
-    print while <$fh>;
-    close($fh);
-    exit 0;
+    open(my $fh,'<',$state_file) or exit 0; print while <$fh>; close($fh); exit 0;
 }
 
 if ($forget_ip ne '') {
     die "IP non valido: $forget_ip\n" unless valid_ip($forget_ip);
     state_transaction(sub { my ($state)=@_; delete $state->{$forget_ip}; remove_marker($forget_ip); return 1; });
-    print "Dimenticato stato locale per $forget_ip\n";
-    exit 0;
+    print "Dimenticato stato locale per $forget_ip\n"; exit 0;
 }
 
 if ($unban_ip ne '') {
     die "IP non valido: $unban_ip\n" unless valid_ip($unban_ip);
     -f $ssh_key or die "Chiave SSH non trovata: $ssh_key\n";
     -f $known_hosts or die "known_hosts non trovato: $known_hosts\n";
-    my $rc = run_remote("unban-all $unban_ip");
-    die "Unban remoto fallito rc=$rc\n" if $rc != 0;
-    local_fastban_del($unban_ip, 'manual-unban');
+    my $rc=run_remote("unban-all $unban_ip"); die "Unban remoto fallito rc=$rc\n" if $rc!=0;
+    local_fastban_del($unban_ip,'manual-unban');
     state_transaction(sub { my ($state)=@_; delete $state->{$unban_ip}; remove_marker($unban_ip); return 1; });
-    print "Unban remoto e stato locale rimossi per $unban_ip\n";
-    exit 0;
+    print "Unban remoto e stato locale rimossi per $unban_ip\n"; exit 0;
 }
 
-if ($test_line ne '') {
-    process_line($test_line, 1);
-    exit 0;
-}
-
+if ($test_line ne '') { process_line($test_line,1); exit 0; }
 if ($test_file ne '') {
-    open(my $fh, '<', $test_file) or die "Impossibile leggere $test_file: $!\n";
-    while (my $line = <$fh>) { process_line($line, 1); }
-    close($fh);
-    exit 0;
+    open(my $fh,'<',$test_file) or die "Impossibile leggere $test_file: $!\n";
+    while (my $line=<$fh>) { process_line($line,1); }
+    close($fh); exit 0;
 }
 
 -f $log_file or die "Log non trovato: $log_file\n";
 -f $ssh_key or die "Chiave SSH non trovata: $ssh_key\n";
 -f $known_hosts or die "known_hosts non trovato: $known_hosts\n";
+load_allowlist(); cleanup_state_and_markers();
+logmsg('notice',"start build=$BUILD log=$log_file rules=$rules_directory config=$config_file firewall=$firewall firewall_port=$firewall_port tail_sleep=$tail_sleep");
 
-load_allowlist();
-cleanup_state_and_markers();
-logmsg('notice', "start build=$BUILD log=$log_file detector=$regex_file config=$config_file firewall=$firewall firewall_port=$firewall_port tail_sleep=$tail_sleep");
-
-open(my $tail, '-|', 'tail', '-n', '0', '-F', '-s', $tail_sleep, '--', $log_file)
+open(my $tail,'-|','tail','-n','0','-F','-s',$tail_sleep,'--',$log_file)
     or die "Impossibile avviare tail: $!\n";
-
 while (1) {
-    my $line = <$tail>;
-    last unless defined $line;
-
-    # Inizio del tempo di reazione: la riga è stata consegnata dal processo
-    # tail al watcher ed è disponibile per essere analizzata.
-    my ($line_seen_at, $line_seen_real_us) = capture_clock_pair();
-    process_line($line, 0, $line_seen_at, $line_seen_real_us);
+    my $line=<$tail>; last unless defined $line;
+    my ($line_seen_at,$line_seen_real_us)=capture_clock_pair();
+    process_line($line,0,$line_seen_at,$line_seen_real_us);
 }
-
-close($tail);
-die "tail terminato inaspettatamente\n";
+close($tail); die "tail terminato inaspettatamente\n";
