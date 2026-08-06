@@ -1,0 +1,178 @@
+#!/bin/sh
+set -eu
+. /usr/local/sbin/reactive-fw-common
+
+LOGTAG=reactive-fw
+
+log() { logger -t "$LOGTAG" -- "$*"; }
+die() { log "ERROR $*"; echo "ERROR: $*" >&2; exit 1; }
+usage() {
+    cat >&2 <<'EOF'
+Usage:
+  reactive-fw-ban check
+  reactive-fw-ban check-ip <ip>
+  reactive-fw-ban temp-add <ip> <seconds>
+  reactive-fw-ban temp-del <ip>
+  reactive-fw-ban sync-add <ip>
+  reactive-fw-ban sync-del <ip>
+  reactive-fw-ban unban-all <ip>
+  reactive-fw-ban list
+EOF
+    exit 2
+}
+
+persist_add() {
+    file="$1"; target="$2"; comment="$3"
+    mkdir -p "$(dirname "$file")"; touch "$file"
+    if ! awk -v target="$target" '($1 == target){found=1} END{exit found?0:1}' "$file"; then
+        printf '%s # %s %s\n' "$target" "$comment" "$(date '+%F %T')" >> "$file"
+    fi
+}
+
+persist_del() {
+    file="$1"; target="$2"; tmp="${file}.tmp.$$"
+    [ -f "$file" ] || return 0
+    awk -v target="$target" '($1 != target)' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+    cat "$tmp" > "$file" || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+}
+
+validate_target() {
+    family="$(rwf_family "$1" 2>/dev/null || true)"
+    [ -n "$family" ] || die "invalid IP or canonical IPv4 CIDR: $1"
+    printf '%s' "$family"
+}
+
+backend="$(rwf_backend)" || die 'invalid backend configuration'
+table="$(rwf_cfg TABLE_NAME reactive_web_firewall)"
+blocklist="$(rwf_cfg BLOCKLIST /etc/reactive-web-firewall/blocklist)"
+banip_table="$(rwf_cfg BANIP_TABLE banIP)"
+banip_v4="$(rwf_cfg BANIP_SET_V4 blocklist.v4)"
+banip_v6="$(rwf_cfg BANIP_SET_V6 blocklist.v6)"
+banip_file="$(rwf_cfg BANIP_BLOCKLIST /etc/banip/banip.blocklist)"
+
+rwf_ensure_standalone_table
+if [ "$backend" = banip ]; then rwf_require_banip || die 'banIP nftables sets are not active'; fi
+
+action="${1:-}"
+case "$action" in
+    check)
+        [ "$#" -eq 1 ] || usage
+        command -v nft >/dev/null 2>&1 || die 'nft command missing'
+        command -v conntrack >/dev/null 2>&1 || die 'conntrack command missing'
+        [ "$backend" != banip ] || [ -w "$banip_file" ] || die "banIP blocklist not writable: $banip_file"
+        echo "OK backend=$backend"
+        log "check backend=$backend ok"
+        exit 0
+        ;;
+    list)
+        [ "$#" -eq 1 ] || usage
+        nft -a list table inet "$table"
+        [ "$backend" != banip ] || nft -a list table inet "$banip_table"
+        exit 0
+        ;;
+    temp-add)
+        [ "$#" -eq 3 ] || usage
+        target="$2"; seconds="$3"; family="$(validate_target "$target")"
+        case "$seconds" in ''|*[!0-9]*) die "invalid timeout: $seconds" ;; esac
+        [ "$seconds" -gt 0 ] || die 'timeout must be greater than zero'
+        ;;
+    temp-del|sync-add|sync-del|unban-all|check-ip)
+        [ "$#" -eq 2 ] || usage
+        target="$2"; family="$(validate_target "$target")"
+        ;;
+    *) usage ;;
+esac
+
+[ "$family" = v4 ] && banip_set="$banip_v4" || banip_set="$banip_v6"
+
+runtime_add() {
+    mode="$1"
+    if [ "$backend" = banip ]; then
+        setname="$banip_set"
+        nft delete element inet "$banip_table" "$setname" "{ $target }" >/dev/null 2>&1 || true
+        if [ "$mode" = temporary ]; then
+            nft add element inet "$banip_table" "$setname" "{ $target timeout ${seconds}s }"
+        else
+            nft add element inet "$banip_table" "$setname" "{ $target }"
+        fi
+        nft get element inet "$banip_table" "$setname" "{ $target }" >/dev/null
+    else
+        setname="${mode}_$family"
+        nft delete element inet "$table" "$setname" "{ $target }" >/dev/null 2>&1 || true
+        if [ "$mode" = temporary ]; then
+            nft add element inet "$table" "$setname" "{ $target timeout ${seconds}s }"
+        else
+            nft add element inet "$table" "$setname" "{ $target }"
+        fi
+        nft get element inet "$table" "$setname" "{ $target }" >/dev/null
+    fi
+    rwf_drop_conntrack "$target"
+}
+
+runtime_del() {
+    mode="$1"
+    if [ "$backend" = banip ]; then
+        nft delete element inet "$banip_table" "$banip_set" "{ $target }" >/dev/null 2>&1 || true
+    else
+        nft delete element inet "$table" "${mode}_$family" "{ $target }" >/dev/null 2>&1 || true
+    fi
+}
+
+case "$action" in
+    temp-add)
+        runtime_add temporary || die "cannot add temporary runtime ban for $target"
+        log "temp-add target=$target timeout=${seconds}s backend=$backend runtime=ok conntrack=dropped"
+        ;;
+    temp-del)
+        runtime_del temporary
+        log "temp-del target=$target backend=$backend runtime=removed"
+        ;;
+    sync-add)
+        runtime_add permanent || die "cannot add permanent runtime ban for $target"
+        rwf_lock_acquire || die 'persistence lock failed'
+        if [ "$backend" = banip ]; then
+            persist_add "$banip_file" "$target" reactive-web-firewall || die "cannot update $banip_file"
+            file="$banip_file"
+        else
+            persist_add "$blocklist" "$target" reactive-web-firewall || die "cannot update $blocklist"
+            file="$blocklist"
+        fi
+        rwf_lock_release
+        log "sync-add target=$target backend=$backend runtime=ok conntrack=dropped persistent=ok file=$file reload=skipped"
+        ;;
+    sync-del)
+        runtime_del permanent
+        rwf_lock_acquire || die 'persistence lock failed'
+        if [ "$backend" = banip ]; then
+            persist_del "$banip_file" "$target" || die "cannot update $banip_file"
+            file="$banip_file"
+        else
+            persist_del "$blocklist" "$target" || die "cannot update $blocklist"
+            file="$blocklist"
+        fi
+        rwf_lock_release
+        log "sync-del target=$target backend=$backend runtime=removed persistent=removed file=$file reload=skipped"
+        ;;
+    unban-all)
+        runtime_del temporary
+        runtime_del permanent
+        rwf_lock_acquire || die 'persistence lock failed'
+        if [ "$backend" = banip ]; then
+            persist_del "$banip_file" "$target" || die "cannot update $banip_file"
+        else
+            persist_del "$blocklist" "$target" || die "cannot update $blocklist"
+        fi
+        rwf_lock_release
+        log "unban-all target=$target backend=$backend runtime=removed persistent=removed"
+        ;;
+    check-ip)
+        if [ "$backend" = banip ]; then
+            nft get element inet "$banip_table" "$banip_set" "{ $target }" 2>/dev/null && exit 0
+        else
+            nft get element inet "$table" "permanent_$family" "{ $target }" 2>/dev/null && exit 0
+            nft get element inet "$table" "temporary_$family" "{ $target }" 2>/dev/null && exit 0
+        fi
+        exit 1
+        ;;
+esac

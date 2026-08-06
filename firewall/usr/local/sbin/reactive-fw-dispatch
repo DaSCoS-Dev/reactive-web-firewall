@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+
+PATH='/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin'
+CONFIG=/etc/reactive-web-firewall/firewall.conf
+LOGTAG=reactive-fw-dispatch
+
+cfg() {
+    key="$1"; def="$2"; val=""
+    [ ! -r "$CONFIG" ] || val="$(sed -n "s/^${key}=//p" "$CONFIG" | tail -n 1)"
+    [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
+}
+
+log() { logger -t "$LOGTAG" -- "$*"; }
+deny() { log "DENY src=${SRC_IP:-unknown} command=[${ORIG:-}] reason=$1"; echo "DENY: $1" >&2; exit 1; }
+
+SRC_IP="$(printf '%s\n' "${SSH_CONNECTION:-}" | awk '{print $1}')"
+ALLOWED="$(cfg ALLOWED_SERVER_IPS '')"
+[ -n "$SRC_IP" ] || deny source-missing
+case " $ALLOWED " in *" $SRC_IP "*) : ;; *) deny source-not-allowed ;; esac
+
+RAW="${SSH_ORIGINAL_COMMAND:-}"
+[ -n "$RAW" ] || deny empty-command
+ORIG="$(printf '%s\n' "$RAW" | sed -e 's/[[:space:]][[:space:]]*/ /g' -e 's/^ //; s/ $//')"
+[ -n "$ORIG" ] || deny empty-command
+printf '%s' "$ORIG" | grep -Eq '^[A-Za-z0-9:.,/_ -]+$' || deny invalid-characters
+
+set -f
+set -- $ORIG
+set +f
+[ "$#" -le 7 ] || deny too-many-arguments
+
+CMD="${1:-}"; A1="${2:-}"; A2="${3:-}"
+case "$CMD" in
+    check|list)
+        [ "$#" -eq 1 ] || deny bad-args
+        log "EXEC srcip=$SRC_IP cmd=$CMD"
+        exec /usr/local/sbin/reactive-fw-ban "$CMD"
+        ;;
+    check-ip|temp-del|sync-add|sync-del|perm-add|perm-del|unban-all)
+        [ "$#" -eq 2 ] || [ "$#" -eq 4 ] || deny bad-args
+        case "$CMD" in perm-add) CMD=sync-add ;; perm-del) CMD=sync-del ;; esac
+        log "EXEC srcip=$SRC_IP cmd=$CMD target=$A1 host=${3:--} source=${4:--}"
+        exec /usr/local/sbin/reactive-fw-ban "$CMD" "$A1"
+        ;;
+    temp-add)
+        [ "$#" -eq 3 ] || [ "$#" -eq 5 ] || deny bad-args
+        case "$A2" in ''|*[!0-9]*) deny invalid-timeout ;; esac
+        log "EXEC srcip=$SRC_IP cmd=temp-add target=$A1 timeout=$A2 host=${4:--} source=${5:--}"
+        exec /usr/local/sbin/reactive-fw-ban temp-add "$A1" "$A2"
+        ;;
+    *) deny forbidden-command ;;
+esac

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+. /usr/local/sbin/reactive-fw-common
+
+rwf_ensure_standalone_table
+
+table="$(rwf_cfg TABLE_NAME reactive_web_firewall)"
+blocklist="$(rwf_cfg BLOCKLIST /etc/reactive-web-firewall/blocklist)"
+[ -f "$blocklist" ] || exit 0
+
+while IFS= read -r line || [ -n "$line" ]; do
+    set -- $line
+    target="${1:-}"
+    case "$target" in ''|\#*) continue ;; esac
+    family="$(rwf_family "$target" 2>/dev/null || true)"
+    [ -n "$family" ] || continue
+    nft add element inet "$table" "permanent_$family" "{ $target }" >/dev/null 2>&1 || true
+done < "$blocklist"

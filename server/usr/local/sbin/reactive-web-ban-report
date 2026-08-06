@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# Raccoglie in un unico report il traffico PCAP, i log Apache e i log
+# reactive-web-ban relativi a uno specifico indirizzo IP.
+
+set -u
+set -o pipefail
+
+PCAP_DIR="/var/log/reactive-web-firewall/pcap"
+APACHE_LOG_DIR="/var/log/apache2"
+APACHE_LOG_NAMES=(
+    "reactive_web_access.log"
+)
+
+usage() {
+    cat <<'USAGE'
+Uso:
+  reactive-web-ban-report IP [FILE_OUTPUT]
+
+Esempi:
+  reactive-web-ban-report 203.0.113.77
+  reactive-web-ban-report 203.0.113.77 /root/analisi-203.0.113.77.txt
+
+Il report contiene:
+  - righe Apache dell'IP, incluse le rotazioni .1 e .gz;
+  - eventi reactive-web-ban presenti nel journal;
+  - pacchetti TCP 80/443 estratti dai file PCAP circolari.
+USAGE
+}
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+    usage >&2
+    exit 2
+fi
+
+IP="$1"
+
+# Validazione IPv4/IPv6 usando il modulo Socket già disponibile con Perl.
+if ! perl -MSocket=AF_INET,AF_INET6,inet_pton -e '
+    my $ip = shift;
+    exit((inet_pton(AF_INET, $ip) || inet_pton(AF_INET6, $ip)) ? 0 : 1);
+' "$IP"; then
+    echo "Errore: indirizzo IP non valido: $IP" >&2
+    exit 2
+fi
+
+SAFE_IP=${IP//:/_}
+SAFE_IP=${SAFE_IP//\//_}
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+OUT=${2:-"/root/reactive-web-ban-report-${SAFE_IP}-${TIMESTAMP}.txt"}
+
+if ! command -v tcpdump >/dev/null 2>&1; then
+    echo "Errore: tcpdump non trovato." >&2
+    exit 1
+fi
+
+TMPDIR_REPORT=$(mktemp -d /tmp/web-ban-report.XXXXXX)
+trap 'rm -rf "$TMPDIR_REPORT"' EXIT
+
+APACHE_TMP="$TMPDIR_REPORT/apache.txt"
+WATCHER_TMP="$TMPDIR_REPORT/watcher.txt"
+PCAP_TMP="$TMPDIR_REPORT/pcap.txt"
+ERROR_TMP="$TMPDIR_REPORT/errors.txt"
+
+: > "$APACHE_TMP"
+: > "$WATCHER_TMP"
+: > "$PCAP_TMP"
+: > "$ERROR_TMP"
+
+extract_apache_file() {
+    local file="$1"
+
+    if [[ "$file" == *.gz ]]; then
+        if command -v zcat >/dev/null 2>&1; then
+            zcat -- "$file" 2>>"$ERROR_TMP" |
+                awk -v ip="$IP" '$1 == ip { print }' >> "$APACHE_TMP"
+        else
+            echo "zcat non disponibile: impossibile leggere $file" >> "$ERROR_TMP"
+        fi
+    else
+        awk -v ip="$IP" '$1 == ip { print }' "$file" \
+            >> "$APACHE_TMP" 2>>"$ERROR_TMP"
+    fi
+}
+
+# Apache: file corrente e rotazioni, ordinati dal meno recente al più recente.
+for base in "${APACHE_LOG_NAMES[@]}"; do
+    mapfile -t APACHE_FILES < <(
+        find "$APACHE_LOG_DIR" -maxdepth 1 -type f -name "${base}*" \
+            -printf '%T@ %p\n' 2>/dev/null |
+        sort -n |
+        cut -d' ' -f2-
+    )
+
+    if (( ${#APACHE_FILES[@]} > 0 )); then
+        {
+            echo
+            echo "### ${base} e rotazioni"
+        } >> "$APACHE_TMP"
+
+        for file in "${APACHE_FILES[@]}"; do
+            extract_apache_file "$file"
+        done
+    fi
+done
+
+# Journal del watcher. Il grep è intenzionalmente sull'IP completo.
+if command -v journalctl >/dev/null 2>&1; then
+    journalctl -t reactive-web-ban -o short-precise --no-pager 2>>"$ERROR_TMP" |
+        grep -F -- "$IP" > "$WATCHER_TMP" || true
+else
+    echo "journalctl non disponibile" >> "$ERROR_TMP"
+fi
+
+# PCAP: copia istantanea di ogni file per evitare di leggere direttamente
+# quello che tcpdump sta ancora aggiornando.
+mapfile -t PCAP_FILES < <(
+    find "$PCAP_DIR" -maxdepth 1 -type f -name 'web.pcap*' \
+        -printf '%T@ %p\n' 2>/dev/null |
+    sort -n |
+    cut -d' ' -f2-
+)
+
+PCAP_INDEX=0
+for file in "${PCAP_FILES[@]}"; do
+    ((PCAP_INDEX += 1))
+    snapshot="$TMPDIR_REPORT/pcap-${PCAP_INDEX}.pcap"
+
+    if ! cp --reflink=auto -- "$file" "$snapshot" 2>>"$ERROR_TMP"; then
+        echo "Impossibile copiare il PCAP: $file" >> "$ERROR_TMP"
+        continue
+    fi
+
+    {
+        echo
+        echo "### Sorgente PCAP: $file"
+    } >> "$PCAP_TMP"
+
+    tcpdump \
+        -nn \
+        -tttt \
+        -r "$snapshot" \
+        "host $IP and tcp and (port 80 or port 443)" \
+        >> "$PCAP_TMP" 2>>"$ERROR_TMP" || true
+done
+
+APACHE_COUNT=$(grep -cE '^[0-9A-Fa-f:.]+[[:space:]]' "$APACHE_TMP" 2>/dev/null || true)
+WATCHER_COUNT=$(grep -cF "$IP" "$WATCHER_TMP" 2>/dev/null || true)
+PCAP_COUNT=$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]' "$PCAP_TMP" 2>/dev/null || true)
+
+mkdir -p -- "$(dirname -- "$OUT")"
+
+{
+    echo "WEB BAN REPORT"
+    echo "=============="
+    echo "IP: $IP"
+    echo "Host: $(hostname -f 2>/dev/null || hostname)"
+    echo "Generato: $(date '+%Y-%m-%d %H:%M:%S.%N %z')"
+    echo "PCAP analizzati: ${#PCAP_FILES[@]}"
+    echo "Righe Apache trovate: $APACHE_COUNT"
+    echo "Eventi watcher trovati: $WATCHER_COUNT"
+    echo "Pacchetti PCAP trovati: $PCAP_COUNT"
+
+    echo
+    echo "================================================================"
+    echo "1. LOG APACHE"
+    echo "================================================================"
+    if (( APACHE_COUNT > 0 )); then
+        cat "$APACHE_TMP"
+    else
+        echo "Nessuna riga Apache trovata per $IP."
+    fi
+
+    echo
+    echo "================================================================"
+    echo "2. REACTIVE-WEB-BAN"
+    echo "================================================================"
+    if (( WATCHER_COUNT > 0 )); then
+        cat "$WATCHER_TMP"
+    else
+        echo "Nessun evento reactive-web-ban trovato per $IP."
+    fi
+
+    echo
+    echo "================================================================"
+    echo "3. TRAFFICO TCP DAI PCAP"
+    echo "================================================================"
+    if (( PCAP_COUNT > 0 )); then
+        cat "$PCAP_TMP"
+    else
+        echo "Nessun pacchetto TCP 80/443 trovato per $IP."
+    fi
+
+    if [[ -s "$ERROR_TMP" ]]; then
+        echo
+        echo "================================================================"
+        echo "4. AVVISI ED ERRORI DI LETTURA"
+        echo "================================================================"
+        cat "$ERROR_TMP"
+    fi
+} > "$OUT"
+
+chmod 0600 "$OUT"
+
+echo "Report creato: $OUT"
+echo "Righe Apache: $APACHE_COUNT"
+echo "Eventi watcher: $WATCHER_COUNT"
+echo "Pacchetti PCAP: $PCAP_COUNT"
+echo
+ls -lh "$OUT"
+

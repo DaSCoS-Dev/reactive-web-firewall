@@ -1,0 +1,37 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Reactive Web Firewall rule policy
+#
+# Durations:
+#   off | disabled | 0
+#   permanent | perm | 1
+#   30m | 4h | 3d | 2w | 3600
+#
+# Files are reloaded automatically when their modification time changes.
+
+# The local proxy-side nftables bridge is deliberately short-lived. It is
+# removed as soon as OpenWrt confirms the definitive ban. If the remote action
+# fails, the timeout removes the local element automatically.
+local_fastban_enabled = on
+local_fastban_timeout = 5m
+
+# Destroy sockets already accepted by Apache. The second sweep is a safety net
+# after the firewall confirms the ban.
+local_socket_kill       = on
+local_socket_post_sweep = on
+local_socket_ports      = 80,443
+
+# Avoid repeating the same or weaker remote action while queued log lines for
+# the same source are still being delivered.
+duplicate_suppress = 90s
+
+git_exploit       = permanent
+env_exploit       = permanent
+framework_exploit = permanent
+xmlrpc             = 3d
+wp_batch           = 3d
+sql_injection      = 2w
+known_webshell     = permanent
+php_probe          = 1h
+wp_login           = 4h

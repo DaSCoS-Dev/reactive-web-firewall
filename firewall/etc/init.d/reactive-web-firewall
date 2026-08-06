@@ -1,0 +1,34 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+START=19
+STOP=89
+USE_PROCD=1
+
+load_ruleset() {
+    tmp="/tmp/reactive-web-firewall-nft.$$"
+    trap 'rm -f "$tmp"' EXIT HUP INT TERM
+    : > "$tmp"
+    if nft list table inet reactive_web_firewall >/dev/null 2>&1; then
+        echo 'delete table inet reactive_web_firewall' >> "$tmp"
+    fi
+    cat /etc/reactive-web-firewall/firewall.nft >> "$tmp"
+    nft -f "$tmp"
+    rm -f "$tmp"
+    trap - EXIT HUP INT TERM
+}
+
+start_service() {
+    load_ruleset
+    /usr/local/sbin/reactive-fw-load
+    logger -t reactive-fw 'standalone nftables table loaded'
+}
+
+reload_service() {
+    start_service
+}
+
+stop_service() {
+    nft delete table inet reactive_web_firewall >/dev/null 2>&1 || true
+}

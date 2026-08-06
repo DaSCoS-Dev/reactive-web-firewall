@@ -1,0 +1,21 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Reactive Web Firewall - OpenWrt side
+# auto uses the active banIP nftables blocklist when available, otherwise the
+# standalone table installed by this project.
+PERSIST_BACKEND=auto
+
+# Space-separated server addresses allowed to use the forced SSH command.
+ALLOWED_SERVER_IPS=192.0.2.10
+
+TABLE_NAME=reactive_web_firewall
+RULESET=/etc/reactive-web-firewall/firewall.nft
+BLOCKLIST=/etc/reactive-web-firewall/blocklist
+
+BANIP_TABLE=banIP
+BANIP_SET_V4=blocklist.v4
+BANIP_SET_V6=blocklist.v6
+BANIP_BLOCKLIST=/etc/banip/banip.blocklist
+
+CONNTRACK_DROP=1

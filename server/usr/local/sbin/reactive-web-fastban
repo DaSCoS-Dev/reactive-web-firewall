@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+NFT="/usr/sbin/nft"
+RULESET="/etc/nftables.d/reactive-web-fastban.nft"
+TABLE_FAMILY="inet"
+TABLE_NAME="reactive_web_fastban"
+DEFAULT_TIMEOUT="5m"
+
+die() {
+    echo "ERRORE: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<'EOF_USAGE'
+Uso:
+  reactive-web-fastban add <ip> [timeout]
+  reactive-web-fastban del <ip>
+  reactive-web-fastban check <ip>
+  reactive-web-fastban list
+  reactive-web-fastban reload
+EOF_USAGE
+    exit 1
+}
+
+set_for_ip() {
+    local ip="$1"
+    case "$ip" in
+        *:*) echo "fastban_v6" ;;
+        *.*) echo "fastban_v4" ;;
+        *)   die "indirizzo IP non riconosciuto: $ip" ;;
+    esac
+}
+
+validate_timeout() {
+    local value="$1"
+    [[ "$value" =~ ^[1-9][0-9]*(s|m|h|d)$ ]] ||
+        die "timeout non valido: $value"
+}
+
+ensure_table() {
+    if "$NFT" list table "$TABLE_FAMILY" "$TABLE_NAME" >/dev/null 2>&1; then
+        return 0
+    fi
+    "$NFT" -f "$RULESET"
+}
+
+add_ip() {
+    local ip="$1"
+    local timeout="${2:-$DEFAULT_TIMEOUT}"
+    local setname
+
+    validate_timeout "$timeout"
+    setname="$(set_for_ip "$ip")"
+    ensure_table
+
+    if "$NFT" add element "$TABLE_FAMILY" "$TABLE_NAME" "$setname" \
+        "{ $ip timeout $timeout }" >/dev/null 2>&1
+    then
+        logger -t reactive-web-fastban \
+            "manual-add ip=$ip set=$setname timeout=$timeout rc=0"
+        return 0
+    fi
+
+    if "$NFT" get element "$TABLE_FAMILY" "$TABLE_NAME" "$setname" \
+        "{ $ip }" >/dev/null 2>&1
+    then
+        logger -t reactive-web-fastban \
+            "manual-add ip=$ip set=$setname timeout=$timeout rc=0 already_present=1"
+        return 0
+    fi
+
+    die "impossibile inserire $ip nel set $setname"
+}
+
+del_ip() {
+    local ip="$1"
+    local setname
+
+    setname="$(set_for_ip "$ip")"
+    ensure_table
+
+    if "$NFT" delete element "$TABLE_FAMILY" "$TABLE_NAME" "$setname" \
+        "{ $ip }" >/dev/null 2>&1
+    then
+        logger -t reactive-web-fastban \
+            "manual-del ip=$ip set=$setname rc=0"
+        return 0
+    fi
+
+    if ! "$NFT" get element "$TABLE_FAMILY" "$TABLE_NAME" "$setname" \
+        "{ $ip }" >/dev/null 2>&1
+    then
+        logger -t reactive-web-fastban \
+            "manual-del ip=$ip set=$setname rc=0 already_absent=1"
+        return 0
+    fi
+
+    die "impossibile rimuovere $ip dal set $setname"
+}
+
+check_ip() {
+    local ip="$1"
+    local setname
+    setname="$(set_for_ip "$ip")"
+    ensure_table
+    "$NFT" get element "$TABLE_FAMILY" "$TABLE_NAME" "$setname" "{ $ip }"
+}
+
+list_all() {
+    ensure_table
+    "$NFT" -a list table "$TABLE_FAMILY" "$TABLE_NAME"
+}
+
+reload_table() {
+    local tmp
+    tmp="$(mktemp)"
+    trap 'rm -f "$tmp"' EXIT
+
+    if "$NFT" list table "$TABLE_FAMILY" "$TABLE_NAME" >/dev/null 2>&1; then
+        printf 'delete table %s %s\n' "$TABLE_FAMILY" "$TABLE_NAME" > "$tmp"
+    fi
+    cat "$RULESET" >> "$tmp"
+    "$NFT" -f "$tmp"
+    rm -f "$tmp"
+    trap - EXIT
+}
+
+cmd="${1:-}"
+
+case "$cmd" in
+    add)
+        [[ $# -ge 2 && $# -le 3 ]] || usage
+        add_ip "$2" "${3:-$DEFAULT_TIMEOUT}"
+        ;;
+    del)
+        [[ $# -eq 2 ]] || usage
+        del_ip "$2"
+        ;;
+    check)
+        [[ $# -eq 2 ]] || usage
+        check_ip "$2"
+        ;;
+    list)
+        [[ $# -eq 1 ]] || usage
+        list_all
+        ;;
+    reload)
+        [[ $# -eq 1 ]] || usage
+        reload_table
+        ;;
+    *)
+        usage
+        ;;
+esac

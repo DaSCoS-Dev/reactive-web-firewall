@@ -1,0 +1,5 @@
+*.zip
+*.pcap*
+*.log
+server_key.pub
+.DS_Store

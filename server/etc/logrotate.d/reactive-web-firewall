@@ -1,0 +1,15 @@
+/var/log/apache2/reactive_web_access.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+    sharedscripts
+    postrotate
+        if systemctl is-active --quiet apache2.service; then
+            systemctl reload apache2.service >/dev/null 2>&1 || true
+        fi
+    endscript
+}

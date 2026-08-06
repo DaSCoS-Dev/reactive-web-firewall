@@ -1,0 +1,18 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[Unit]
+Description=Reactive Web Firewall local nftables bridge
+Wants=network-online.target
+After=network-online.target
+Before=reactive-web-ban.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reactive-web-fastban reload
+ExecReload=/usr/local/sbin/reactive-web-fastban reload
+ExecStop=/bin/sh -ec '/usr/sbin/nft delete table inet reactive_web_fastban >/dev/null 2>&1 || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
