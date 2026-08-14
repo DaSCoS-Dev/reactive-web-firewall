@@ -5,6 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Legacy Perl → Reactive Web Firewall rule audit
 
+**English** | [Italiano](../it/PERL-RULE-AUDIT.md)
+
 Audit date: 2026-08-14
 
 This document records the migration status of the high-confidence immediate-ban families used by the legacy `custom-web-ban-immediate.pl` watcher. Since V7, RwF has two mutually-exclusive detection engines: **Inside Apache**, which runs before the final response exists, and **Log Reader**, which can safely retain response-aware rules. Enforcement is shared by both engines through `rwf-helper`.

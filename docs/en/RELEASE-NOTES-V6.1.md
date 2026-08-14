@@ -5,6 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Reactive Web Firewall V6.1
 
+**English** | [Italiano](../it/RELEASE-NOTES-V6.1.md)
+
 Date: 2026-08-14
 
 ## OpenWrt backend becomes distributable

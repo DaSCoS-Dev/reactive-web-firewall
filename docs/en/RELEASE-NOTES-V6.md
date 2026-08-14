@@ -5,6 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Reactive Web Firewall V6
 
+**English** | [Italiano](../it/RELEASE-NOTES-V6.md)
+
 Date: 2026-08-13
 
 ## Detection engine

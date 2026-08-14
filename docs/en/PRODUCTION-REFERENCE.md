@@ -5,6 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Production reference and performance audit
 
+**English** | [Italiano](../it/PRODUCTION-REFERENCE.md)
+
 Audit baseline date: 2026-08-14
 
 These measurements come from a real production Apache reverse proxy while the

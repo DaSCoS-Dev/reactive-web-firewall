@@ -5,13 +5,15 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Reactive Web Firewall
 
-Reactive Web Firewall (RwF) è un sistema di rilevazione e blocco per Apache con
-**due motori di detection mutualmente esclusivi** e un unico percorso di
-enforcement privilegiato.
+**English** | [Italiano](README.it.md)
 
-Versione pacchetto: **V7.0 / installer `2026.08.14-installer-07.0`**.
+Reactive Web Firewall (RwF) is an Apache detection and blocking system with
+**two mutually exclusive detection engines** and one shared privileged
+enforcement pipeline.
 
-## Architettura
+Package version: **V7.0 / installer `2026.08.14-installer-07.0`**.
+
+## Architecture
 
 ```text
                      DETECTION
@@ -36,95 +38,98 @@ Versione pacchetto: **V7.0 / installer `2026.08.14-installer-07.0`**.
                                  OpenWrt
 ```
 
-I due motori non devono essere attivi contemporaneamente. L'installer verifica
-questa invariante dopo ogni installazione o migrazione.
+The two detection engines must never be active at the same time. The installer
+checks this invariant after every installation or migration.
 
-## I quattro profili installabili
+## Four installable profiles
 
-| Detection engine | Backend | Comportamento |
+| Detection engine | Backend | Behavior |
 |---|---|---|
-| Inside Apache | Local-only | blocco precoce in Apache + nftables locale autorevole |
-| Inside Apache | OpenWrt | blocco precoce + bridge locale + ban OpenWrt |
-| Log Reader | Local-only | lettura access log + nftables locale autorevole |
-| Log Reader | OpenWrt | lettura access log + bridge locale + ban OpenWrt |
+| Inside Apache | Local-only | early Apache blocking + authoritative local nftables |
+| Inside Apache | OpenWrt | early blocking + local bridge + OpenWrt ban |
+| Log Reader | Local-only | access-log detection + authoritative local nftables |
+| Log Reader | OpenWrt | access-log detection + local bridge + OpenWrt ban |
 
 ### Inside Apache
 
-`mod_rwf` lavora nel ciclo della richiesta Apache, prima dell'applicazione. Può
-quindi creare la shared cache, bloccare richieste parallele e chiudere/abortire
-connessioni prima che nftables o OpenWrt abbiano terminato.
+`mod_rwf` runs inside the Apache request lifecycle, before the application. It
+can populate the shared cache, block parallel requests, and close/abort
+connections before nftables or OpenWrt have completed their work.
 
-Richiede gli header di sviluppo Apache e APXS sulla macchina di destinazione.
+It requires Apache development headers and APXS on the target host.
 
 ### Log Reader
 
-`rwf-log-reader` segue in tempo quasi reale un access log Apache e classifica le
-richieste **dopo** che Apache ha scritto la riga. Non richiede APXS né carica
-codice nel processo Apache.
+`rwf-log-reader` follows an Apache access log in near real time and classifies
+requests **after** Apache writes the log line. It does not require APXS and does
+not load code into the Apache process.
 
-Il motore è self-contained e non dipende da CSF. Mantiene inoltre famiglie che
-necessitano del contesto della risposta, fra cui `wp-login` e alcuni probe PHP
-root-level che non possono essere trasformati in sicurezza in regole early-path.
+The engine is self-contained and does not depend on CSF. It also keeps rule
+families that require response context, including `wp-login` and selected
+root-level PHP probes that cannot safely be converted into early path rules.
 
-Formati di access log supportati:
+Supported access-log formats:
 
 ```text
 IP (vhost:port) ... "METHOD URI HTTP/x" STATUS ... "REF" "UA"
 vhost:port IP ... "METHOD URI HTTP/x" STATUS ... "REF" "UA"
 ```
 
-Il campo opzionale `apache_end_us=<microseconds>` viene usato, se presente, come
-timestamp sorgente dell'evento per misurare anche la latenza di consegna del log.
+If present, the optional `apache_end_us=<microseconds>` field is used as the
+source timestamp of the event, allowing delivery latency from the access log to
+be measured as well.
 
-## Enforcement comune
+## Shared enforcement
 
-Entrambi i motori inviano lo stesso protocollo evento `v=1` a:
+Both engines send the same `v=1` event protocol to:
 
 ```text
 /run/reactive-web-firewall/helper.sock
 ```
 
-`rwf-helper` applica whitelist, marker di compatibilità LFD, firewall locale,
-`ss -K` e, quando configurato, OpenWrt. Né `mod_rwf` né `rwf-log-reader` hanno
-privilegi per manipolare direttamente il firewall remoto.
+`rwf-helper` applies the whitelist, LFD compatibility marker, local firewall,
+`ss -K`, and OpenWrt when configured. Neither `mod_rwf` nor `rwf-log-reader`
+has privileges to manipulate the remote firewall directly.
 
 ### LOCAL-ONLY
 
-La policy della regola è autorevole sul firewall locale:
+The rule policy is authoritative on the local firewall:
 
 ```text
 30s / 30m / 4h / 3d / 2w / permanent
 ```
 
-I ban permanenti sono persistiti e ripristinati al boot.
+Permanent bans are persisted and restored at boot.
 
 ### OPENWRT
 
-Il percorso è:
+The enforcement path is:
 
 ```text
-evento
-  -> fast-ban locale temporaneo
+event
+  -> temporary local fast-ban
   -> ss -K pre
   -> SSH OpenWrt temp-add/sync-add
   -> ss -K post
-  -> conferma remota
-     -> rimozione del bridge locale
+  -> remote confirmation
+     -> local bridge removal
 ```
 
-Se OpenWrt non conferma, il fallback locale resta attivo fino al TTL configurato.
+If OpenWrt does not confirm the operation, the local fallback remains active
+until its configured TTL expires.
 
-## Backend OpenWrt distribuibile
+## Distributable OpenWrt backend
 
-Il pacchetto contiene anche il lato OpenWrt. Il wizard può installarlo o
-aggiornarlo via SSH amministrativo e poi usare una chiave runtime dedicata con
-forced-command.
+The package includes the OpenWrt side as well. The wizard can install or update
+it through an administrative SSH session, then switch to a dedicated runtime
+key restricted by a forced command.
 
-L'IP autorizzato non è hardcoded: durante il bootstrap OpenWrt usa il primo
-campo di `SSH_CONNECTION`, cioè l'indirizzo sorgente del server RwF **come viene
-realmente visto dal firewall**. Le sorgenti già autorizzate vengono preservate.
+The authorized source IP is not hardcoded. During bootstrap, OpenWrt uses the
+first field of `SSH_CONNECTION`, meaning the source address of the RwF server
+**as actually seen by the firewall**. Previously authorized sources are
+preserved.
 
-Il runtime remoto espone una piccola API versionata, ad esempio:
+The remote runtime exposes a small versioned API, for example:
 
 ```text
 version
@@ -134,9 +139,9 @@ sync-add <ip>
 unban-all <ip>
 ```
 
-Vedere `docs/OPENWRT-BACKEND-AUDIT.md`.
+See [`docs/en/OPENWRT-BACKEND-AUDIT.md`](docs/en/OPENWRT-BACKEND-AUDIT.md).
 
-## Regole
+## Rules
 
 ### Inside Apache
 
@@ -146,7 +151,7 @@ File:
 /etc/reactive-web-firewall/apache-rules.conf
 ```
 
-Sintassi:
+Syntax:
 
 ```apache
 RwfRuleExact       <name> <path>  <policy>
@@ -163,7 +168,7 @@ File:
 /etc/reactive-web-firewall/log-reader.conf
 ```
 
-Esempio:
+Example:
 
 ```ini
 log_file=/var/log/apache2/other_vhosts_access.log
@@ -173,110 +178,121 @@ rule.wordpress-wp-login-context=4h
 rule.phpmyadmin-standard=off
 ```
 
-Le famiglie ad alta confidenza sono mantenute allineate fra i due motori dove
-il dato disponibile lo permette. Le regole che richiedono status/referrer/UA
-restano intenzionalmente Log Reader-only.
+High-confidence families are kept aligned between the two engines whenever the
+available data permits it. Rules that require HTTP status/referrer/UA remain
+intentionally Log Reader-only.
 
 ## Whitelist
 
-Unico file condiviso:
+One shared file:
 
 ```text
 /etc/reactive-web-firewall/whitelist.conf
 ```
 
-Sintassi:
+Syntax:
 
 ```apache
 RwfWhitelistIP 192.0.2.10/32
 RwfWhitelistIP 2001:db8::/32
 ```
 
-Il helper verifica sempre la whitelist. Inside Apache la verifica anche prima
-di generare l'evento.
+The helper always checks the whitelist. Inside Apache checks it before
+emitting the event as well.
 
-## Installazione
+## Installation
 
 ```bash
 sha256sum -c SHA256SUMS
 ./install.sh
 ```
 
-Il wizard:
+The wizard:
 
-1. rileva piattaforma, Apache e un'eventuale installazione RwF precedente;
-2. chiede `Inside Apache` oppure `Log Reader`;
-3. installa solo le dipendenze necessarie al motore scelto;
-4. valida la configurazione Apache esistente;
-5. preserva whitelist e configurazioni compatibili;
-6. per Log Reader verifica realmente il formato del log scelto;
-7. chiede `LOCAL-ONLY` oppure `OPENWRT`;
-8. per OpenWrt esegue host-key check, chiave runtime, bootstrap remoto e self-test;
-9. compila sempre il helper C e compila `mod_rwf` solo per Inside Apache;
-10. prepara il nuovo motore prima di spegnere quello precedente;
-11. avvia l'enforcement comune;
-12. esegue il cutover e rende i motori mutualmente esclusivi;
-13. esegue i self-test specifici;
-14. verifica l'invariante finale tramite `rwf-status`.
+1. detects the platform, Apache, and any existing RwF installation;
+2. asks for `Inside Apache` or `Log Reader`;
+3. installs only the dependencies required by the selected engine;
+4. validates the existing Apache configuration;
+5. preserves compatible whitelist and configuration data;
+6. for Log Reader, validates the selected access-log format against real data;
+7. asks for `LOCAL-ONLY` or `OPENWRT`;
+8. for OpenWrt, performs host-key checking, runtime-key setup, remote bootstrap, and self-test;
+9. always builds the C helper and builds `mod_rwf` only for Inside Apache;
+10. prepares the new engine before stopping the previous one;
+11. starts the shared enforcement layer;
+12. performs the cutover and enforces mutual exclusion;
+13. runs engine-specific self-tests;
+14. verifies the final invariant through `rwf-status`.
 
-Se viene trovato il watcher originale `custom-web-ban-immediate.pl`, viene
-considerato un predecessore del Log Reader. Se si migra al nuovo Log Reader,
-l'installer traduce anche le policy note della vecchia configurazione quando
-possibile; il vecchio servizio viene fermato solo durante il cutover.
+If the original `custom-web-ban-immediate.pl` watcher is found, it is treated as
+a predecessor of the Log Reader. When migrating to the new Log Reader, known
+policies from the old configuration are translated when possible; the old
+service is stopped only during the cutover.
 
-## Stato e diagnostica
+## Status and diagnostics
 
 ```bash
 rwf-status
 ```
 
-Mostra motore attivo, backend, stato modulo/service/helper/firewall, numero di
-regole e un eventuale conflitto fra i due motori.
+Shows the active engine, backend, module/service/helper/firewall state, rule
+count, and any conflict between the two detection engines.
 
-Per una raccolta forense:
+For forensic collection:
 
 ```bash
 rwf-fish <IP>
 rwf-fish <IP> '2 hours ago'
 ```
 
-L'output si adatta automaticamente al motore configurato.
+The output adapts automatically to the configured engine.
 
-## Struttura repository
+## Repository layout
 
 ```text
-src/                 mod_rwf + helper C
-log-reader/          sensore Perl self-contained
-config/              regole/whitelist Inside Apache
-apache/              template Apache
-local-firewall/      nftables fast-ban comune
-openwrt/             backend remoto e bootstrap
-systemd/             unit comuni e Log Reader
-scripts/             installer helpers, self-test, status, audit
-docs/                architettura, audit e release notes
+src/                 mod_rwf + C helper
+log-reader/          self-contained Perl sensor
+config/              Inside Apache rules/whitelist
+apache/              Apache templates
+local-firewall/      shared nftables fast-ban
+openwrt/             remote backend and bootstrap
+systemd/             shared units and Log Reader unit
+scripts/             installer helpers, self-tests, status, audit
+docs/en/             English architecture, audits and release notes
+docs/it/             Italian architecture, audits and release notes
 install.sh
 uninstall.sh
 ```
 
-## Dipendenze
+## Dependencies
 
-Il Log Reader **non richiede** i pacchetti development Apache/APXS. Inside Apache
-sì. Entrambi richiedono gli strumenti necessari a compilare il piccolo helper C,
-Perl, nftables e `iproute2`/equivalente.
+The Log Reader does **not** require Apache development packages or APXS. Inside
+Apache does. Both require the tools needed to build the small C helper, Perl,
+nftables, and `iproute2` or equivalent utilities.
 
-OpenSSH client viene richiesto solo scegliendo OpenWrt.
+The OpenSSH client is required only when the OpenWrt backend is selected.
 
-## Prestazioni
+## Performance
 
-`docs/PRODUCTION-REFERENCE.md` contiene la baseline osservata sul motore Inside
-Apache con 10 eventi reali validi. I campioni appartenenti a una regressione di
-sviluppo nota e i self-test sintetici sono esclusi. Il report non attribuisce
-quelle statistiche al Log Reader, che ha una finestra di rilevazione diversa per
-definizione.
+[`docs/en/PRODUCTION-REFERENCE.md`](docs/en/PRODUCTION-REFERENCE.md) contains the
+observed Inside Apache baseline based on 10 valid real production events.
+Samples from a known development regression and synthetic self-tests are
+excluded. The report does not attribute those statistics to the Log Reader,
+which has a different detection window by design.
 
-## Licenza e copyright
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Detection-engine architecture](docs/en/ENGINE-ARCHITECTURE.md)
+- [OpenWrt backend audit](docs/en/OPENWRT-BACKEND-AUDIT.md)
+- [Legacy Perl rule audit](docs/en/PERL-RULE-AUDIT.md)
+- [Production reference](docs/en/PRODUCTION-REFERENCE.md)
+- [V7 release notes](docs/en/RELEASE-NOTES-V7.md)
+
+## License and copyright
 
 Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>.
 
-Licenza: **GNU Affero General Public License v3 o successiva**
-(`AGPL-3.0-or-later`). Vedere `LICENSE` e `COPYRIGHT.md`.
+License: **GNU Affero General Public License v3 or later**
+(`AGPL-3.0-or-later`). See [`LICENSE`](LICENSE) and
+[`COPYRIGHT.md`](COPYRIGHT.md).

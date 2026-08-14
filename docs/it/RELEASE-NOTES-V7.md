@@ -5,11 +5,13 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Reactive Web Firewall V7.0
 
-Release date: 2026-08-14
+[English](../en/RELEASE-NOTES-V7.md) | **Italiano**
+
+Data di rilascio: 2026-08-14
 
 V7 unifica le due linee storiche di RwF in un solo prodotto e un solo installer.
 
-## Due motori di detection
+## Due motori di rilevazione
 
 Il wizard permette di scegliere, in modo mutualmente esclusivo:
 
@@ -54,7 +56,7 @@ regole, whitelist ed eventuali conflitti.
 
 `rwf-fish` è ora engine-aware.
 
-## Performance audit
+## Audit prestazionale
 
 La baseline pubblicata a N=10 rimane invariata e riguarda il percorso Inside
 Apache validato in produzione. I successivi eventi raccolti solo come conferma

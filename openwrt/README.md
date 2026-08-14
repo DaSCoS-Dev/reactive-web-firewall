@@ -3,21 +3,30 @@ Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
 SPDX-License-Identifier: AGPL-3.0-or-later
 -->
 
-# Backend OpenWrt per Reactive Web Firewall
+# OpenWrt backend for Reactive Web Firewall
 
-Il payload OpenWrt è installato/aggiornato dal wizard principale via una sessione SSH amministrativa.
+**English** | [Italiano](README.it.md)
+
+The OpenWrt payload is installed or updated by the main wizard through an
+administrative SSH session.
 
 ## Core
 
-- `/usr/bin/f2b-banip`: ban temporanei e permanenti nei set banIP.
-- `/usr/bin/f2b-banip-wrapper`: forced-command SSH, API ristretta usata da RwF.
-- `/usr/sbin/fw-unban-all`: rimozione amministrativa completa IPv4/IPv6.
+- `/usr/bin/f2b-banip`: temporary and permanent bans in banIP sets.
+- `/usr/bin/f2b-banip-wrapper`: restricted SSH forced-command API used by RwF.
+- `/usr/sbin/fw-unban-all`: complete administrative IPv4/IPv6 unban.
 
 ## Tools
 
-- `/usr/sbin/check-fw-ban`: diagnostica dello stato di un IP.
-- `/usr/bin/banip-aggregate-subnets.sh`: manutenzione/aggregazione della blocklist.
+- `/usr/sbin/check-fw-ban`: diagnostic lookup for an IP address.
+- `/usr/bin/banip-aggregate-subnets.sh`: blocklist maintenance/aggregation.
 
-`f2b-portban` non è una dipendenza di Reactive Web Firewall e non viene installato dal core. Il wrapper mantiene compatibilità con i comandi port-ban soltanto se `/usr/sbin/f2b-portban` è già presente.
+`f2b-portban` is not a Reactive Web Firewall dependency and is not installed by
+the core. The wrapper keeps compatibility with port-ban commands only when
+`/usr/sbin/f2b-portban` is already present.
 
-La configurazione banIP esistente viene preservata. L'installer abilita soltanto le opzioni minime necessarie al backend RwF e non sostituisce `/etc/config/banip`.
+The existing banIP configuration is preserved. The installer enables only the
+minimum options required by the RwF backend and never replaces
+`/etc/config/banip` wholesale.
+
+See also the [OpenWrt backend audit](../docs/en/OPENWRT-BACKEND-AUDIT.md).

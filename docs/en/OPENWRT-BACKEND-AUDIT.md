@@ -5,6 +5,8 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # OpenWrt backend audit
 
+**English** | [Italiano](../it/OPENWRT-BACKEND-AUDIT.md)
+
 This document records the dependency audit used to turn the OpenWrt side of Reactive Web Firewall into a distributable component rather than an external prerequisite.
 
 ## Runtime dependency map
