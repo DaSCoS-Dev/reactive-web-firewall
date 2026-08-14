@@ -1,0 +1,55 @@
+#!/bin/sh
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+IP="${1:-}"
+[ -n "$IP" ] || { echo "Uso: $0 <ip>"; exit 2; }
+found=0
+section(){ echo; echo "### $1"; }
+hit(){ found=1; echo "$1"; }
+
+section "FILE STATICI"
+for spec in \
+  '/etc/banip/banip.allowlist|ALLOWLIST' \
+  '/etc/banip/banip.blocklist|BAN GLOBALE PERSISTENTE' \
+  '/etc/f2b-portban/tcp4.perm|BAN PER PORTA PERSISTENTE' \
+  '/etc/f2b-portban/udp4.perm|BAN PER PORTA PERSISTENTE' \
+  '/etc/f2b-portban/tcp6.perm|BAN PER PORTA PERSISTENTE' \
+  '/etc/f2b-portban/udp6.perm|BAN PER PORTA PERSISTENTE'
+do
+        file="${spec%%|*}"; label="${spec#*|}"
+        [ -r "$file" ] || continue
+        matches="$(awk -v ip="$IP" '$1==ip {print}' "$file" || true)"
+        [ -z "$matches" ] || hit "[$label] $file -> $(printf '%s' "$matches" | tr '\n' '; ')"
+done
+
+section "banIP RUNTIME"
+if nft list table inet banIP >/dev/null 2>&1; then
+        for setname in $(nft list table inet banIP 2>/dev/null | awk '/^[[:space:]]*set[[:space:]]+/ {print $2}'); do
+                out="$(nft get element inet banIP "$setname" "{ $IP }" 2>/dev/null || true)"
+                [ -z "$out" ] || hit "[banIP:$setname] presente"
+        done
+else
+        echo "tabella inet banIP non presente"
+fi
+
+section "F2BPORT RUNTIME"
+if nft list table inet f2bport >/dev/null 2>&1; then
+        for setname in tcp4_perm tcp4_temp udp4_perm udp4_temp tcp6_perm tcp6_temp udp6_perm udp6_temp; do
+                matches="$(nft list set inet f2bport "$setname" 2>/dev/null | sed -n '/elements = {/,/}/p' | tr ',' '\n' | sed 's/}//g' | grep -F "$IP . " || true)"
+                [ -z "$matches" ] && continue
+                while IFS= read -r line; do
+                        [ -n "$line" ] || continue
+                        hit "[f2bport:$setname] $(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+                done <<EOF_HITS
+$matches
+EOF_HITS
+        done
+else
+        echo "tabella inet f2bport non presente"
+fi
+
+section "ESITO"
+if [ "$found" -eq 1 ]; then echo "IP $IP TROVATO in almeno una regola/lista"; exit 0; fi
+echo "IP $IP NON trovato in ban/allowlist conosciute"
+exit 1

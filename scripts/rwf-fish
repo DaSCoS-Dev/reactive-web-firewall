@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -u
+RWF_ETC="${RWF_ETC:-/etc/reactive-web-firewall}"
+DETECTION_ENGINE="inside-apache"
+[[ -r "$RWF_ETC/runtime.conf" ]] && source "$RWF_ETC/runtime.conf"
+ACCESS_LOG="${RWF_FISH_ACCESS_LOG:-/var/log/apache2/other_vhosts_access.log}"
+if [[ "${DETECTION_ENGINE:-}" == log-reader && -r "$RWF_ETC/log-reader.conf" ]]; then
+    cfg_log="$(awk -F= '$1 ~ /^[[:space:]]*log_file[[:space:]]*$/ {sub(/^[^=]*=/,""); gsub(/^[[:space:]]+|[[:space:]]+$/ , ""); print; exit}' "$RWF_ETC/log-reader.conf")"
+    [[ -n "$cfg_log" ]] && ACCESS_LOG="$cfg_log"
+fi
+ERROR_LOG="${RWF_FISH_ERROR_LOG:-/var/log/apache2/error.log}"
+PCAP="${RWF_FISH_PCAP:-/root/rwf-pcaps/rwf-next-fish.pcap}"
+SINCE="${2:-20 minutes ago}"
+usage(){ echo "Uso: $0 <IP> [intervallo-journalctl]" >&2; exit 2; }
+[[ $# -ge 1 && $# -le 2 ]] || usage
+IP="$1"
+if ! python3 - "$IP" >/dev/null 2>&1 <<'PY'
+import ipaddress, sys
+try: ipaddress.ip_address(sys.argv[1])
+except ValueError: raise SystemExit(1)
+PY
+then echo "ERRORE: '$IP' non è un indirizzo IP valido." >&2; exit 1; fi
+separator(){ printf '\n%*s\n' 100 '' | tr ' ' '='; printf '%s\n' "$1"; printf '%*s\n' 100 '' | tr ' ' '='; }
+echo
+printf 'Reactive Web Firewall - raccolta dati IP\nIP: %s\nData: %s\nDetection engine: %s\n' "$IP" "$(date '+%Y-%m-%d %H:%M:%S %Z')" "${DETECTION_ENGINE:-unknown}"
+separator "ACCESS LOG"
+if [[ -r "$ACCESS_LOG" ]]; then grep -F "$IP" "$ACCESS_LOG" || echo "(nessuna riga trovata)"; else echo "(log non leggibile: $ACCESS_LOG)"; fi
+separator "RWF HELPER JOURNAL - $SINCE"
+journalctl -t rwf-helper --since "$SINCE" --no-pager 2>/dev/null | grep -F "$IP" || echo "(nessuna riga trovata)"
+if [[ "${DETECTION_ENGINE:-}" == log-reader ]]; then
+    separator "LOG READER JOURNAL - $SINCE"
+    journalctl -t rwf-log-reader --since "$SINCE" --no-pager 2>/dev/null | grep -F "$IP" || echo "(nessuna riga trovata)"
+else
+    separator "APACHE ERROR LOG - mod_rwf"
+    if [[ -r "$ERROR_LOG" ]]; then grep -F "$IP" "$ERROR_LOG" | grep -F 'mod_rwf:' || echo "(nessuna riga trovata)"; else echo "(log non leggibile: $ERROR_LOG)"; fi
+fi
+separator "TCPDUMP"
+if [[ -r "$PCAP" ]]; then tcpdump -nn -tttt -S -vv -r "$PCAP" "host $IP" 2>&1 || true; else echo "(PCAP non trovato o non leggibile: $PCAP)"; fi
+separator "FINE"

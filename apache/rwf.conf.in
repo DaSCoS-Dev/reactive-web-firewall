@@ -1,0 +1,17 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Reactive Web Firewall
+#
+# Main Apache integration configuration.
+#
+# The actual protection rules live outside Apache's normal configuration
+# tree so that they can also be consumed by the RwF installer, validator
+# and privileged helper.
+
+RwfEnabled On
+RwfDropConnection @RWF_DROP_CONNECTION@
+RwfSuppressBlockedAccessLog @RWF_SUPPRESS_ACCESSLOG@
+RwfHelperSocket /run/reactive-web-firewall/helper.sock
+IncludeOptional /etc/reactive-web-firewall/whitelist.conf
+Include /etc/reactive-web-firewall/apache-rules.conf

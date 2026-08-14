@@ -1,33 +1,29 @@
+<!--
+Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 # Changelog
 
-## 0.3.0
+## V7.0 — 2026-08-14
 
-- Centralized all server-side settings in one documented configuration file.
-- Split detection families into independently documented Perl modules under `rules.d`.
-- Added safe hot reload: invalid edits keep the last valid runtime configuration.
-- Added `reactive-web-validate`, `reactive-web-apply`, and a configurable packet-ring launcher.
-- Made Apache log path, local fast-ban ports/table/priority, SSH channel, socket kill and packet ring configurable.
-- Removed the monolithic detector and the separate connection/rules configuration files.
+See [`docs/RELEASE-NOTES-V7.md`](docs/RELEASE-NOTES-V7.md).
 
-## 0.2.1
+Highlights: unified mutually-exclusive `Inside Apache` and `Log Reader`
+detection engines, one common local/OpenWrt enforcement pipeline, controlled
+engine migration, standalone CSF-independent Log Reader, `rwf-status` and
+engine-aware forensic tooling.
 
-- changed the project license from MIT to GNU AGPL v3 or later;
-- declared Daniele Stefano Continenza as creator and original copyright holder;
-- added AUTHORS.md, NOTICE and SPDX copyright headers;
-- updated Italian and English licensing documentation.
+## V6.1 — 2026-08-14
 
-## 0.2.0
+See [`docs/RELEASE-NOTES-V6.1.md`](docs/RELEASE-NOTES-V6.1.md).
 
-- replaced the simplified watcher with the production-aligned 1,400-line engine;
-- added local nftables bridge metrics and automatic bridge removal after OpenWrt confirmation;
-- added exact `ss -K` auto-family behaviour for IPv4-mapped Apache sockets;
-- aligned the banIP backend with direct runtime insertion, verification, conntrack deletion and persistence without reload;
-- added OpenWrt `apk` and `opkg` prerequisite handling;
-- corrected the restricted SSH command grammar to match the real watcher;
-- added standalone detector code independent of CSF/LFD;
-- excluded all site-specific Apache VirtualHosts and production addresses;
-- expanded Italian and English documentation.
+Highlights: distributable OpenWrt backend, automatic secure bootstrap, audit
+helper, corrected production baseline, public copyright/licensing hygiene.
 
-## 0.1.0
+## V6 — 2026-08-13
 
-Initial prototype release.
+See [`docs/RELEASE-NOTES-V6.md`](docs/RELEASE-NOTES-V6.md).
+
+Highlights: request-target regex engine, legacy rule audit, upgrade-safe rule
+merge and optimized local firewall fast path.

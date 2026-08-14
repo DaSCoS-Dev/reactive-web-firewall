@@ -1,0 +1,172 @@
+#!/bin/sh
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -eu
+
+PATH='/usr/sbin:/usr/bin:/sbin:/bin'
+GLOBAL='/usr/bin/f2b-banip'
+LOGTAG='f2b-banip-wrapper'
+PORTBAN='/usr/sbin/f2b-portban'
+CHECKIP='/usr/sbin/check-fw-ban'
+CONF='/etc/f2b-banip-wrapper.conf'
+API_VERSION='1'
+
+log() {
+        logger -t "$LOGTAG" -- "$*"
+}
+
+deny() {
+        log "DENY src=${SRC_IP:-unknown} raw=[${RAW:-}] raw_esc=[${RAW_ESC:-}] orig=[${ORIG:-}] orig_esc=[${ORIG_ESC:-}] reason=$1"
+        echo "DENY: $1" >&2
+        exit 1
+}
+
+# La lista sorgenti è configurazione, non codice. L'installer la ricava
+# dall'IP con cui OpenWrt vede realmente la sessione SSH di bootstrap.
+ALLOWED_SOURCES=''
+if [ -r "$CONF" ]; then
+        # File scritto da root dall'installer RwF; contiene solo assegnamenti.
+        # shellcheck disable=SC1090
+        . "$CONF"
+fi
+
+SRC_IP="$(printf '%s\n' "${SSH_CONNECTION:-}" | awk '{print $1}')"
+[ -n "$SRC_IP" ] || deny "missing-source-ip"
+[ -n "${ALLOWED_SOURCES:-}" ] || deny "allowed-sources-not-configured"
+
+case " $ALLOWED_SOURCES " in
+        *" $SRC_IP "*) : ;;
+        *) deny "source-not-allowed" ;;
+esac
+
+RAW="${SSH_ORIGINAL_COMMAND:-}"
+[ -n "$RAW" ] || deny "empty-command"
+
+ORIG="$(
+        printf '%s\n' "$RAW" |
+                sed -e 's/[[:space:]][[:space:]]*/ /g' \
+                    -e 's/^ //; s/ $//'
+)"
+[ -n "$ORIG" ] || deny "empty-command"
+
+RAW_ESC="$(printf '%s\n' "$RAW" | sed -n 'l')"
+ORIG_ESC="$(printf '%s\n' "$ORIG" | sed -n 'l')"
+
+# CIDR IPv4, IPv6, nomi regola e metadati RwF richiedono questi caratteri.
+printf '%s' "$ORIG" | grep -Eq '^[A-Za-z0-9:.,/_ -]+$' || \
+        deny "invalid-characters"
+
+set -f
+# shellcheck disable=SC2086
+set -- $ORIG
+set +f
+
+[ "$#" -le 7 ] || deny "too-many-arguments"
+
+CMD="${1:-}"
+A1="${2:-}"
+A2="${3:-}"
+A3="${4:-}"
+A4="${5:-}"
+
+case "$CMD" in
+        version)
+                [ "$#" -eq 1 ] || deny "version-bad-args"
+                echo "RWF-OPENWRT-API $API_VERSION"
+                ;;
+
+        capabilities)
+                [ "$#" -eq 1 ] || deny "capabilities-bad-args"
+                printf '%s\n' global-temp global-permanent unban
+                nft list set inet banIP blocklist.v4 >/dev/null 2>&1 && printf '%s\n' ipv4 || true
+                nft list set inet banIP blocklist.v6 >/dev/null 2>&1 && printf '%s\n' ipv6 || true
+                [ -x "$PORTBAN" ] && printf '%s\n' portban || true
+                ;;
+
+        check)
+                [ "$#" -eq 1 ] || deny "check-bad-args"
+                log "EXEC srcip=$SRC_IP host=- source=- cmd=check"
+                "$GLOBAL" check >/dev/null
+                if [ -x "$PORTBAN" ]; then
+                        "$PORTBAN" check >/dev/null
+                fi
+                echo OK
+                ;;
+
+        check-ip)
+                [ "$#" -eq 2 ] || [ "$#" -eq 4 ] || \
+                        deny "check-ip-bad-args"
+                [ -x "$CHECKIP" ] || deny "check-ip-not-executable"
+                log "EXEC srcip=$SRC_IP host=${3:--} source=${4:--} cmd=check-ip ip=$A1"
+                exec "$CHECKIP" "$A1"
+                ;;
+
+        temp-add)
+                [ "$#" -eq 3 ] || [ "$#" -eq 5 ] || \
+                        deny "temp-add-bad-args"
+                log "EXEC srcip=$SRC_IP host=${4:--} source=${5:--} cmd=temp-add target=$A1 timeout=$A2"
+                exec "$GLOBAL" temp-add "$A1" "$A2"
+                ;;
+
+        temp-del)
+                [ "$#" -eq 2 ] || [ "$#" -eq 4 ] || \
+                        deny "temp-del-bad-args"
+                log "EXEC srcip=$SRC_IP host=${3:--} source=${4:--} cmd=temp-del target=$A1"
+                exec "$GLOBAL" temp-del "$A1"
+                ;;
+
+        sync-add|perm-add)
+                [ "$#" -eq 2 ] || [ "$#" -eq 4 ] || \
+                        deny "sync-add-bad-args"
+                log "EXEC srcip=$SRC_IP host=${3:--} source=${4:--} cmd=sync-add target=$A1"
+                exec "$GLOBAL" sync-add "$A1"
+                ;;
+
+        sync-del|perm-del)
+                [ "$#" -eq 2 ] || [ "$#" -eq 4 ] || \
+                        deny "sync-del-bad-args"
+                log "EXEC srcip=$SRC_IP host=${3:--} source=${4:--} cmd=sync-del target=$A1"
+                exec "$GLOBAL" sync-del "$A1"
+                ;;
+
+        unban-all)
+                [ "$#" -eq 2 ] || deny "unban-all-needs-ip"
+                exec /usr/sbin/fw-unban-all "$A1"
+                ;;
+
+        temp-add-port)
+                [ -x "$PORTBAN" ] || deny "portban-not-installed"
+                [ "$#" -eq 5 ] || [ "$#" -eq 7 ] || \
+                        deny "temp-add-port-bad-args"
+                log "EXEC srcip=$SRC_IP host=${6:--} source=${7:--} cmd=temp-add-port ip=$A1 proto=$A2 ports=$A3 timeout=$A4"
+                exec "$PORTBAN" temp-add-port "$A1" "$A2" "$A3" "$A4"
+                ;;
+
+        temp-del-port)
+                [ -x "$PORTBAN" ] || deny "portban-not-installed"
+                [ "$#" -eq 4 ] || [ "$#" -eq 6 ] || \
+                        deny "temp-del-port-bad-args"
+                log "EXEC srcip=$SRC_IP host=${5:--} source=${6:--} cmd=temp-del-port ip=$A1 proto=$A2 ports=$A3"
+                exec "$PORTBAN" temp-del-port "$A1" "$A2" "$A3"
+                ;;
+
+        sync-add-port|perm-add-port)
+                [ -x "$PORTBAN" ] || deny "portban-not-installed"
+                [ "$#" -eq 4 ] || [ "$#" -eq 6 ] || \
+                        deny "sync-add-port-bad-args"
+                log "EXEC srcip=$SRC_IP host=${5:--} source=${6:--} cmd=sync-add-port ip=$A1 proto=$A2 ports=$A3"
+                exec "$PORTBAN" sync-add-port "$A1" "$A2" "$A3"
+                ;;
+
+        sync-del-port|perm-del-port)
+                [ -x "$PORTBAN" ] || deny "portban-not-installed"
+                [ "$#" -eq 4 ] || [ "$#" -eq 6 ] || \
+                        deny "sync-del-port-bad-args"
+                log "EXEC srcip=$SRC_IP host=${5:--} source=${6:--} cmd=sync-del-port ip=$A1 proto=$A2 ports=$A3"
+                exec "$PORTBAN" sync-del-port "$A1" "$A2" "$A3"
+                ;;
+
+        *)
+                deny "forbidden-command"
+                ;;
+esac

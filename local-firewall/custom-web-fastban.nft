@@ -1,0 +1,25 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Reactive Web Firewall - local fast-ban nftables table
+# Temporary elements use per-element timeouts; permanent elements have none.
+
+table inet custom_web_fastban {
+    set fastban_v4 {
+        type ipv4_addr
+        flags timeout
+        gc-interval 30s
+    }
+
+    set fastban_v6 {
+        type ipv6_addr
+        flags timeout
+        gc-interval 30s
+    }
+
+    chain input {
+        type filter hook input priority -10; policy accept;
+        ip saddr @fastban_v4 tcp dport { 80, 443 } counter drop
+        ip6 saddr @fastban_v6 tcp dport { 80, 443 } counter drop
+    }
+}

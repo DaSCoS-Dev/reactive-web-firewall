@@ -1,0 +1,436 @@
+#!/bin/sh
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# /usr/bin/f2b-banip
+#
+# Uso:
+#   f2b-banip temp-add 1.2.3.4 3600
+#   f2b-banip temp-add 1.2.3.0/24 3600
+#   f2b-banip temp-del 1.2.3.4
+#   f2b-banip temp-del 1.2.3.0/24
+#   f2b-banip sync-add 1.2.3.4
+#   f2b-banip sync-add 1.2.3.0/24
+#   f2b-banip sync-del 1.2.3.4
+#   f2b-banip sync-del 1.2.3.0/24
+#
+# Supporto:
+#   - IPv4 singoli
+#   - reti IPv4 CIDR canoniche, ad esempio 192.0.2.0/24
+#   - IPv6 singoli, come nella versione precedente
+#
+# Le reti IPv4 CIDR devono essere espresse con l'indirizzo di rete corretto.
+# Esempio: 103.196.9.0/12 viene rifiutata perché la rete canonica è
+# 103.192.0.0/12.
+
+set -eu
+
+PATH='/usr/sbin:/usr/bin:/sbin:/bin'
+
+LOGTAG='f2b-banip'
+BANIP_INIT='/etc/init.d/banip'
+BLOCKFILE='/etc/banip/banip.blocklist'
+
+log() {
+        logger -t "$LOGTAG" -- "$*"
+}
+
+die() {
+        log "ERROR: $*"
+        echo "ERROR: $*" >&2
+        exit 1
+}
+
+is_ipv4() {
+        local value="$1"
+        local old_ifs
+        local octet
+
+        case "$value" in
+                ''|*[!0-9.]*|.*|*.|*..*)
+                        return 1
+                        ;;
+        esac
+
+        old_ifs="$IFS"
+        IFS='.'
+        # shellcheck disable=SC2086
+        set -- $value
+        IFS="$old_ifs"
+
+        [ "$#" -eq 4 ] || return 1
+
+        for octet in "$@"; do
+                case "$octet" in
+                        0|[1-9]|[1-9][0-9]|[1-9][0-9][0-9]) : ;;
+                        *) return 1 ;;
+                esac
+
+                [ "$octet" -le 255 ] 2>/dev/null || return 1
+        done
+
+        return 0
+}
+
+is_ipv4_cidr() {
+        local target="$1"
+        local ip
+        local prefix
+        local old_ifs
+        local o1 o2 o3 o4
+        local full_octets
+        local remaining_bits
+        local host_mask
+
+        case "$target" in
+                */*) : ;;
+                *) return 1 ;;
+        esac
+
+        ip="${target%/*}"
+        prefix="${target#*/}"
+
+        # Una sola barra è ammessa.
+        case "$ip" in
+                */*) return 1 ;;
+        esac
+        case "$prefix" in
+                */*) return 1 ;;
+        esac
+
+        is_ipv4 "$ip" || return 1
+
+        case "$prefix" in
+                0|[1-9]|[1-2][0-9]|3[0-2]) : ;;
+                *) return 1 ;;
+        esac
+
+        old_ifs="$IFS"
+        IFS='.'
+        # shellcheck disable=SC2086
+        set -- $ip
+        IFS="$old_ifs"
+
+        o1="$1"
+        o2="$2"
+        o3="$3"
+        o4="$4"
+
+        full_octets=$((prefix / 8))
+        remaining_bits=$((prefix % 8))
+
+        # Controlla che tutti i bit host siano a zero, senza dipendere
+        # da ipcalc.sh e senza normalizzare silenziosamente la rete.
+        case "$full_octets" in
+                0)
+                        if [ "$remaining_bits" -eq 0 ]; then
+                                [ "$o1" -eq 0 ] && [ "$o2" -eq 0 ] && \
+                                        [ "$o3" -eq 0 ] && [ "$o4" -eq 0 ]
+                                return $?
+                        fi
+
+                        host_mask=$(( (1 << (8 - remaining_bits)) - 1 ))
+                        [ $((o1 & host_mask)) -eq 0 ] && \
+                                [ "$o2" -eq 0 ] && [ "$o3" -eq 0 ] && \
+                                [ "$o4" -eq 0 ]
+                        return $?
+                        ;;
+
+                1)
+                        if [ "$remaining_bits" -eq 0 ]; then
+                                [ "$o2" -eq 0 ] && [ "$o3" -eq 0 ] && \
+                                        [ "$o4" -eq 0 ]
+                                return $?
+                        fi
+
+                        host_mask=$(( (1 << (8 - remaining_bits)) - 1 ))
+                        [ $((o2 & host_mask)) -eq 0 ] && \
+                                [ "$o3" -eq 0 ] && [ "$o4" -eq 0 ]
+                        return $?
+                        ;;
+
+                2)
+                        if [ "$remaining_bits" -eq 0 ]; then
+                                [ "$o3" -eq 0 ] && [ "$o4" -eq 0 ]
+                                return $?
+                        fi
+
+                        host_mask=$(( (1 << (8 - remaining_bits)) - 1 ))
+                        [ $((o3 & host_mask)) -eq 0 ] && [ "$o4" -eq 0 ]
+                        return $?
+                        ;;
+
+                3)
+                        if [ "$remaining_bits" -eq 0 ]; then
+                                [ "$o4" -eq 0 ]
+                                return $?
+                        fi
+
+                        host_mask=$(( (1 << (8 - remaining_bits)) - 1 ))
+                        [ $((o4 & host_mask)) -eq 0 ]
+                        return $?
+                        ;;
+
+                4)
+                        # /32: qualsiasi IPv4 valido è già canonico.
+                        [ "$remaining_bits" -eq 0 ]
+                        return $?
+                        ;;
+        esac
+
+        return 1
+}
+
+is_ipv6() {
+        printf '%s' "$1" | grep -Eq '^[0-9A-Fa-f:]+$' &&
+                printf '%s' "$1" | grep -q ':'
+}
+
+target_family() {
+        if is_ipv4 "$1" || is_ipv4_cidr "$1"; then
+                echo 4
+        elif is_ipv6 "$1"; then
+                echo 6
+        else
+                echo 0
+        fi
+}
+
+validate_target() {
+        local target="$1"
+
+        case "$(target_family "$target")" in
+                4|6)
+                        return 0
+                        ;;
+                *)
+                        die "IP o rete CIDR non valida: $target"
+                        ;;
+        esac
+}
+
+set_name_for_target() {
+        case "$(target_family "$1")" in
+                4) echo 'blocklist.v4' ;;
+                6) echo 'blocklist.v6' ;;
+                *) die "IP o rete CIDR non valida: $1" ;;
+        esac
+}
+
+require_env() {
+        [ -x "$BANIP_INIT" ] || die "banIP init script non trovato"
+        mkdir -p /etc/banip
+        touch "$BLOCKFILE"
+        nft list table inet banIP >/dev/null 2>&1 || \
+                die "tabella nft banIP non presente o banIP non attivo"
+}
+
+normalize_timeout() {
+        local timeout="${1:-}"
+
+        [ -n "$timeout" ] || die "timeout mancante"
+        printf '%s' "$timeout" | grep -Eq '^[0-9]+$' || \
+                die "timeout non numerico: $timeout"
+        [ "$timeout" -gt 0 ] || die "timeout deve essere > 0"
+
+        echo "$timeout"
+}
+
+drop_conntrack() {
+        local target="$1"
+
+        # conntrack accetta normalmente anche una rete CIDR. Se la versione
+        # installata non la gestisce, il ban nft resta comunque valido.
+        conntrack -D -s "$target" >/dev/null 2>&1 || true
+        conntrack -D -d "$target" >/dev/null 2>&1 || true
+}
+
+runtime_add() {
+        local target="$1"
+        local timeout="$2"
+        local setname
+
+        validate_target "$target"
+        setname="$(set_name_for_target "$target")"
+        timeout="$(normalize_timeout "$timeout")"
+
+        # Se già presente, prova a sostituirlo con il nuovo timeout.
+        nft delete element inet banIP "$setname" "{ $target }" \
+                >/dev/null 2>&1 || true
+
+        nft add element inet banIP "$setname" \
+                "{ $target timeout ${timeout}s }" || \
+                die "impossibile aggiungere $target al set $setname"
+
+        drop_conntrack "$target"
+
+        log "runtime-add target=$target timeout=${timeout}s set=$setname"
+}
+
+runtime_del() {
+        local target="$1"
+        local setname
+
+        validate_target "$target"
+        setname="$(set_name_for_target "$target")"
+
+        nft delete element inet banIP "$setname" "{ $target }" \
+                >/dev/null 2>&1 || true
+
+        log "runtime-del target=$target set=$setname"
+}
+
+sync_add() {
+        local target="$1"
+        local setname
+
+        validate_target "$target"
+        setname="$(set_name_for_target "$target")"
+
+        #
+        # Applicazione runtime immediata.
+        #
+        # L'elemento potrebbe essere già presente con un timeout perché
+        # precedentemente inserito tramite temp-add. In tal caso lo
+        # rimuoviamo e lo reinseriamo senza timeout, rendendolo permanente.
+        #
+        nft delete element inet banIP "$setname" "{ $target }" \
+                >/dev/null 2>&1 || true
+
+        nft add element inet banIP "$setname" "{ $target }" \
+                >/dev/null 2>&1 || \
+                die "impossibile aggiungere $target al set runtime $setname"
+
+        #
+        # Non consideriamo riuscito il ban finché nftables non conferma
+        # che l'elemento è realmente presente nel set attivo.
+        #
+        nft get element inet banIP "$setname" "{ $target }" \
+                >/dev/null 2>&1 || \
+                die "elemento $target non presente nel set runtime $setname dopo l'aggiunta"
+
+        #
+        # Ora che il blocco è realmente attivo, eliminiamo tutte le
+        # connessioni già tracciate.
+        #
+        drop_conntrack "$target"
+
+        #
+        # Persistenza: il successivo reload o riavvio di banIP rileggerà
+        # l'indirizzo dal file.
+        #
+        if ! awk -v target="$target" \
+                '($1 == target) { found=1 } END { exit found ? 0 : 1 }' \
+                "$BLOCKFILE"
+        then
+                printf '%s # fail2ban-sync %s\n' \
+                        "$target" \
+                        "$(date '+%F %T')" >> "$BLOCKFILE" || \
+                        die "impossibile salvare $target nel file $BLOCKFILE"
+        fi
+
+        log "sync-add target=$target file=$BLOCKFILE set=$setname runtime=ok conntrack=dropped persistent=ok reload=skipped"
+}
+
+sync_del() {
+        local target="$1"
+        local setname
+        local tmp
+
+        validate_target "$target"
+        setname="$(set_name_for_target "$target")"
+
+        #
+        # Rimozione immediata dal set attivo.
+        #
+        nft delete element inet banIP "$setname" "{ $target }" \
+                >/dev/null 2>&1 || true
+
+        #
+        # Rimozione dal file persistente.
+        #
+        tmp="$(mktemp "${BLOCKFILE}.XXXXXX")"
+
+        awk -v target="$target" \
+                '($1 != target)' \
+                "$BLOCKFILE" > "$tmp" || {
+                        rm -f "$tmp"
+                        die "impossibile aggiornare il file $BLOCKFILE"
+                }
+
+        cat "$tmp" > "$BLOCKFILE" || {
+                rm -f "$tmp"
+                die "impossibile riscrivere il file $BLOCKFILE"
+        }
+
+        rm -f "$tmp"
+
+        log "sync-del target=$target file=$BLOCKFILE set=$setname runtime=removed persistent=removed reload=skipped"
+}
+
+cmd_check() {
+        require_env
+        [ -w "$BLOCKFILE" ] || die "blocklist non scrivibile: $BLOCKFILE"
+        echo "OK"
+        log "check ok"
+}
+
+usage() {
+        cat <<'EOF_USAGE'
+Uso:
+  f2b-banip check
+  f2b-banip temp-add <ip|ipv4-cidr> <seconds>
+  f2b-banip temp-del <ip|ipv4-cidr>
+  f2b-banip sync-add <ip|ipv4-cidr>
+  f2b-banip sync-del <ip|ipv4-cidr>
+
+Alias:
+  perm-add == sync-add
+  perm-del == sync-del
+
+Esempi:
+  f2b-banip sync-add 203.0.113.7
+  f2b-banip sync-add 203.0.113.0/24
+  f2b-banip sync-del 203.0.113.0/24
+
+Nota:
+  le reti IPv4 devono essere canoniche. Per esempio 103.196.9.0/12
+  viene rifiutata; la rete corretta è 103.192.0.0/12.
+EOF_USAGE
+        exit 1
+}
+
+main() {
+        local cmd="${1:-}"
+
+        [ -n "$cmd" ] || usage
+        require_env
+
+        case "$cmd" in
+                check)
+                        [ "$#" -eq 1 ] || usage
+                        cmd_check
+                        ;;
+                temp-add)
+                        [ "$#" -eq 3 ] || usage
+                        runtime_add "$2" "$3"
+                        ;;
+                temp-del)
+                        [ "$#" -eq 2 ] || usage
+                        runtime_del "$2"
+                        ;;
+                sync-add|perm-add)
+                        [ "$#" -eq 2 ] || usage
+                        sync_add "$2"
+                        ;;
+                sync-del|perm-del)
+                        [ "$#" -eq 2 ] || usage
+                        sync_del "$2"
+                        ;;
+                *)
+                        usage
+                        ;;
+        esac
+}
+
+main "$@"
+

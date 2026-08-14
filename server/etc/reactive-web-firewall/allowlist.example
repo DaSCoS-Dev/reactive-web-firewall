@@ -1,7 +1,0 @@
-# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
-# SPDX-License-Identifier: AGPL-3.0-or-later
-
-# Exact source IPs that must never be banned by the watcher.
-# One address per line; optional text after the address is ignored.
-#
-# 192.0.2.10 authorised-security-scanner

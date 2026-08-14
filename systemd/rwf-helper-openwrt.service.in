@@ -1,0 +1,52 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[Unit]
+Description=Reactive Web Firewall privileged helper (OpenWrt backend)
+After=network-online.target custom-web-fastban.service
+Wants=network-online.target
+Requires=custom-web-fastban.service
+
+[Service]
+Type=simple
+User=root
+Group=@APACHE_GROUP@
+UMask=0007
+
+RuntimeDirectory=reactive-web-firewall
+RuntimeDirectoryMode=0750
+
+ExecStart=/usr/local/sbin/rwf-helper \
+    --mode openwrt \
+    --socket /run/reactive-web-firewall/helper.sock \
+    --whitelist /etc/reactive-web-firewall/whitelist.conf \
+    --fastban @FASTBAN@ \
+    --fastban-ttl @FALLBACK_TTL@ \
+    --ss @SS@ \
+    --ssh @SSH@ \
+    --ssh-port @SSH_PORT@ \
+    --ssh-key @SSH_KEY@ \
+    --known-hosts @KNOWN_HOSTS@ \
+    --firewall @FIREWALL@ \
+    --control-path /run/reactive-web-firewall/openwrt-ssh-%%C \
+    --active-dir /run/custom-web-ban/active \
+    --lfd-suppress 90 \
+    --max-workers 32
+
+Restart=on-failure
+RestartSec=1s
+KillMode=control-group
+TimeoutStopSec=10s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

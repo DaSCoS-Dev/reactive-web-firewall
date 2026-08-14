@@ -1,0 +1,26 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[Unit]
+Description=Reactive Web Firewall local fast-ban nftables
+After=network-pre.target
+Before=rwf-helper.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/custom-web-fastban reload
+ExecReload=/usr/local/sbin/custom-web-fastban reload
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

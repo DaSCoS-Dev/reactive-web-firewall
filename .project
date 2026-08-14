@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info> -->
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<projectDescription>
+    <name>ReactiveWebFirewall</name>
+    <comment>Reactive Web Firewall (RwF)</comment>
+    <projects>
+    </projects>
+    <buildSpec>
+    </buildSpec>
+    <natures>
+    </natures>
+</projectDescription>

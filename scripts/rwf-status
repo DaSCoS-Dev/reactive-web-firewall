@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -u
+RWF_ETC="${RWF_ETC:-/etc/reactive-web-firewall}"
+RUNTIME="$RWF_ETC/runtime.conf"
+BACKEND="$RWF_ETC/backend.conf"
+DETECTION_ENGINE="unknown"
+BACKEND_MODE="unknown"
+VERSION="unknown"
+[[ -r "$RUNTIME" ]] && source "$RUNTIME"
+[[ -r "$BACKEND" ]] && { MODE=""; source "$BACKEND"; BACKEND_MODE="${MODE:-$BACKEND_MODE}"; }
+
+service_state() {
+    local svc="$1"
+    if systemctl is-active --quiet "$svc" 2>/dev/null; then echo active; else echo inactive; fi
+}
+service_enabled() {
+    local svc="$1"
+    if systemctl is-enabled --quiet "$svc" 2>/dev/null; then echo enabled; else echo disabled; fi
+}
+module_state="not-loaded"
+if command -v apache2ctl >/dev/null 2>&1; then
+    apache2ctl -M 2>/dev/null | grep -Fq 'rwf_module (shared)' && module_state="loaded"
+elif command -v apachectl >/dev/null 2>&1; then
+    apachectl -M 2>/dev/null | grep -Fq 'rwf_module (shared)' && module_state="loaded"
+fi
+
+log_state="$(service_state rwf-log-reader.service)"
+helper_state="$(service_state rwf-helper.service)"
+fastban_state="$(service_state custom-web-fastban.service)"
+conflict="no"
+[[ "$module_state" == loaded && "$log_state" == active ]] && conflict="YES"
+
+whitelist_count=0
+[[ -r "$RWF_ETC/whitelist.conf" ]] && whitelist_count="$(grep -Ec '^[[:space:]]*RwfWhitelistIP[[:space:]]+' "$RWF_ETC/whitelist.conf" 2>/dev/null || true)"
+rules_count="-"
+case "${DETECTION_ENGINE:-}" in
+    inside-apache|apache)
+        [[ -r "$RWF_ETC/apache-rules.conf" ]] && rules_count="$(grep -Ec '^[[:space:]]*RwfRule(Exact|Prefix|Regex|TargetRegex)[[:space:]]+' "$RWF_ETC/apache-rules.conf" 2>/dev/null || true)"
+        ;;
+    log-reader|log)
+        [[ -r "$RWF_ETC/log-reader.conf" ]] && rules_count="$(awk -F= '/^[[:space:]]*rule[.]/ {v=tolower($2); gsub(/[[:space:]]/,"",v); if(v!="off"&&v!="disabled"&&v!="0") n++} END{print n+0}' "$RWF_ETC/log-reader.conf")"
+        ;;
+esac
+
+cat <<EOF
+Reactive Web Firewall
+
+Version          : ${VERSION:-unknown}
+Detection engine : ${DETECTION_ENGINE:-unknown}
+Backend          : ${BACKEND_MODE:-unknown}
+Apache module    : $module_state
+Log reader       : $log_state / $(service_enabled rwf-log-reader.service)
+Helper           : $helper_state
+Local firewall   : $fastban_state
+Active rules     : $rules_count
+Whitelist        : $whitelist_count entries
+Engine conflict  : $conflict
+EOF
+
+if [[ "${BACKEND_MODE:-}" == openwrt ]]; then
+    echo "OpenWrt target   : ${OPENWRT_USER:-root}@${OPENWRT_HOST:-?}:${OPENWRT_SSH_PORT:-22}"
+    [[ -n "${OPENWRT_API_VERSION:-}" ]] && echo "OpenWrt API      : ${OPENWRT_API_VERSION}"
+fi
+
+[[ "$conflict" == no ]]

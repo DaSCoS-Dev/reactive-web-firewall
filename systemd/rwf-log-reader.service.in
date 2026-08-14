@@ -1,0 +1,26 @@
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Unit]
+Description=Reactive Web Firewall Log Reader detection engine
+After=network.target rwf-helper.service custom-web-fastban.service
+Requires=rwf-helper.service custom-web-fastban.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/sbin/rwf-log-reader --config /etc/reactive-web-firewall/log-reader.conf
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

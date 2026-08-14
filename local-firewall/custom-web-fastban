@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Daniele Stefano Continenza <daniele@dascos.info>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+set -Eeuo pipefail
+
+NFT="${RWF_NFT:-$(command -v nft || true)}"
+RULESET="${RWF_FASTBAN_RULESET:-/etc/nftables.d/custom-web-fastban.nft}"
+STATE_DIR="${RWF_STATE_DIR:-/var/lib/reactive-web-firewall}"
+PERMANENT_FILE="$STATE_DIR/local-permanent.list"
+LOCK_FILE="${RWF_FASTBAN_LOCK:-/run/reactive-web-firewall/fastban.lock}"
+TABLE="custom_web_fastban"
+FAMILY="inet"
+DEFAULT_TTL="5m"
+
+log() { logger -t custom-web-fastban -- "$*" 2>/dev/null || true; }
+die() { echo "custom-web-fastban: $*" >&2; log "error=$*"; exit 1; }
+
+usage() {
+    cat <<'EOU'
+Uso:
+  custom-web-fastban add <ip> [timeout|permanent]
+  custom-web-fastban del <ip>
+  custom-web-fastban check <ip>
+  custom-web-fastban list
+  custom-web-fastban reload
+
+Timeout: 30s, 5m, 4h, 3d oppure secondi numerici.
+"permanent" crea un elemento senza timeout e lo persiste su disco.
+EOU
+}
+
+[[ -n "$NFT" && -x "$NFT" ]] || die "nft non trovato"
+
+# Fast validation with no subprocess. nft remains the authoritative parser.
+validate_ip() {
+    local ip="$1"
+    case "$ip" in
+        *:*) [[ "$ip" =~ ^[0-9A-Fa-f:.]+$ ]] ;;
+        *)   [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] ;;
+    esac
+}
+
+set_for_ip() {
+    case "$1" in *:*) printf '%s\n' fastban_v6 ;; *) printf '%s\n' fastban_v4 ;; esac
+}
+
+normalize_ttl() {
+    local raw="${1:-$DEFAULT_TTL}"
+    case "${raw,,}" in permanent|perm|forever) printf '%s\n' permanent; return 0 ;; esac
+    if [[ "$raw" =~ ^[0-9]+$ ]]; then
+        printf '%ss\n' "$raw"
+    elif [[ "$raw" =~ ^[0-9]+[smhd]$ ]]; then
+        printf '%s\n' "${raw,,}"
+    else
+        return 1
+    fi
+}
+
+ensure_state() {
+    install -d -m 0755 "$STATE_DIR"
+    install -d -m 0750 "$(dirname "$LOCK_FILE")"
+    [[ -e "$PERMANENT_FILE" ]] || : > "$PERMANENT_FILE"
+    chmod 0600 "$PERMANENT_FILE"
+}
+
+lock_state() {
+    ensure_state
+    exec 9>"$LOCK_FILE"
+    flock -x 9
+}
+
+ensure_table() {
+    if ! "$NFT" list table "$FAMILY" "$TABLE" >/dev/null 2>&1; then
+        [[ -r "$RULESET" ]] || die "ruleset non leggibile: $RULESET"
+        "$NFT" -f "$RULESET" >/dev/null
+    fi
+}
+
+nft_has_ip() {
+    local ip="$1" setname
+    setname="$(set_for_ip "$ip")"
+    "$NFT" get element "$FAMILY" "$TABLE" "$setname" "{ $ip }" >/dev/null 2>&1
+}
+
+is_persisted_permanent() {
+    [[ -r "$PERMANENT_FILE" ]] && grep -Fx -- "$1" "$PERMANENT_FILE" >/dev/null 2>&1
+}
+
+persist_add_locked() {
+    local ip="$1"
+    is_persisted_permanent "$ip" || printf '%s\n' "$ip" >> "$PERMANENT_FILE"
+}
+
+persist_del_locked() {
+    local ip="$1" tmp
+    [[ -r "$PERMANENT_FILE" ]] || return 0
+    tmp="$(mktemp "$STATE_DIR/.local-permanent.XXXXXX")"
+    grep -Fvx -- "$ip" "$PERMANENT_FILE" > "$tmp" || true
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$PERMANENT_FILE"
+}
+
+# Common temporary path used by the helper. Deliberately optimistic:
+# one nft command first, recovery/inspection only on failure.
+add_temporary_fast() {
+    local ip="$1" ttl="$2" setname rc=0 already=0
+    setname="$(set_for_ip "$ip")"
+
+    if "$NFT" add element "$FAMILY" "$TABLE" "$setname" "{ $ip timeout $ttl }" >/dev/null 2>&1; then
+        rc=0
+    else
+        rc=$?
+        if nft_has_ip "$ip"; then
+            already=1; rc=0
+        else
+            ensure_table
+            if "$NFT" add element "$FAMILY" "$TABLE" "$setname" "{ $ip timeout $ttl }" >/dev/null 2>&1; then
+                rc=0
+            else
+                rc=$?
+            fi
+        fi
+    fi
+
+    log "manual-add ip=$ip set=$setname timeout=$ttl permanent=0 already_present=$already rc=$rc"
+    return "$rc"
+}
+
+add_permanent() {
+    local ip="$1" setname rc=0 already=0
+    setname="$(set_for_ip "$ip")"
+    lock_state
+    ensure_table
+
+    if is_persisted_permanent "$ip" && nft_has_ip "$ip"; then
+        already=1
+    else
+        # A temporary instance cannot be converted in-place reliably.
+        "$NFT" delete element "$FAMILY" "$TABLE" "$setname" "{ $ip }" >/dev/null 2>&1 || true
+        "$NFT" add element "$FAMILY" "$TABLE" "$setname" "{ $ip }" >/dev/null 2>&1 || rc=$?
+        (( rc == 0 )) && persist_add_locked "$ip"
+    fi
+
+    log "manual-add ip=$ip set=$setname timeout=permanent permanent=1 already_present=$already rc=$rc"
+    return "$rc"
+}
+
+add_ip() {
+    local ip="$1" ttl="$2"
+    validate_ip "$ip" || die "IP non valido: $ip"
+    if [[ "$ttl" == permanent ]]; then add_permanent "$ip"; else add_temporary_fast "$ip" "$ttl"; fi
+}
+
+del_ip() {
+    local ip="$1" setname rc=0 removed=0 already_absent=0
+    validate_ip "$ip" || die "IP non valido: $ip"
+    setname="$(set_for_ip "$ip")"
+
+    # Optimistic delete: no pre-flight get/list and no global lock for the
+    # overwhelmingly common temporary fallback cleanup.
+    if "$NFT" delete element "$FAMILY" "$TABLE" "$setname" "{ $ip }" >/dev/null 2>&1; then
+        removed=1
+    else
+        rc=$?
+        if nft_has_ip "$ip"; then
+            # Table exists and element still exists: real delete failure.
+            :
+        else
+            already_absent=1; rc=0
+        fi
+    fi
+
+    if is_persisted_permanent "$ip"; then
+        lock_state
+        persist_del_locked "$ip"
+    fi
+
+    log "manual-del ip=$ip set=$setname removed=$removed already_absent=$already_absent rc=$rc"
+    return "$rc"
+}
+
+reload_table() {
+    local ip setname restored=0 skipped=0
+    lock_state
+    [[ -r "$RULESET" ]] || die "ruleset non leggibile: $RULESET"
+    "$NFT" delete table "$FAMILY" "$TABLE" >/dev/null 2>&1 || true
+    "$NFT" -f "$RULESET" >/dev/null
+    while IFS= read -r ip; do
+        [[ -n "$ip" ]] || continue
+        if ! validate_ip "$ip"; then skipped=$((skipped + 1)); continue; fi
+        setname="$(set_for_ip "$ip")"
+        if "$NFT" add element "$FAMILY" "$TABLE" "$setname" "{ $ip }" >/dev/null 2>&1; then
+            restored=$((restored + 1))
+        else
+            skipped=$((skipped + 1))
+        fi
+    done < "$PERMANENT_FILE"
+    log "reload table=$TABLE restored_permanent=$restored skipped=$skipped rc=0"
+}
+
+cmd="${1:-}"
+case "$cmd" in
+    add)
+        [[ $# -ge 2 && $# -le 3 ]] || { usage; exit 2; }
+        ttl="$(normalize_ttl "${3:-$DEFAULT_TTL}")" || die "timeout non valido: ${3:-$DEFAULT_TTL}"
+        add_ip "$2" "$ttl"
+        ;;
+    del)
+        [[ $# -eq 2 ]] || { usage; exit 2; }
+        del_ip "$2"
+        ;;
+    check)
+        [[ $# -eq 2 ]] || { usage; exit 2; }
+        validate_ip "$2" || exit 2
+        nft_has_ip "$2"
+        ;;
+    list)
+        ensure_table
+        "$NFT" list table "$FAMILY" "$TABLE"
+        ;;
+    reload)
+        reload_table
+        ;;
+    -h|--help|help) usage ;;
+    *) usage; exit 2 ;;
+esac
